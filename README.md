@@ -44,7 +44,12 @@ process only.
 
 ## The desktop app (Windows)
 
-Add to the desktop app's MCP configuration file under `%APPDATA%`:
+Add to the desktop app's MCP configuration file (`*_desktop_config.json`).
+For the Microsoft Store build of the app that file is not under the plain
+`%APPDATA%` but in the package's virtualized copy of it, under
+`%LOCALAPPDATA%\Packages\<the app's package>\LocalCache\Roaming\`; a file
+written to the plain path is never read. The app has to be restarted to
+notice a change:
 
 ```json
 {
