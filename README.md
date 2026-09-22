@@ -13,7 +13,12 @@ are. It needs Python 3.9 or later with `pyserial`, `opencv-python` and
 
 | tool | what it does |
 | --- | --- |
-| `serial_status` | port, bytes received, unread bytes, last error |
+| `serial_ports` | every COM port on the machine, which are open here with what settings, and the default |
+| `serial_open` | connect to a port (baud, bytesize, parity, stopbits, rtscts, xonxoff; 115200 8N1 by default) and make it the default |
+| `serial_close` | disconnect, so another program can have the port |
+| `serial_configure` | change a port's settings, live if it is open |
+| `serial_default` | which port the other tools use when none is named |
+| `serial_status` | settings, bytes received, unread bytes, last error |
 | `serial_read` | everything received since the last look, after collecting for `seconds` |
 | `serial_send` | send text (newline appended unless `newline: false`) |
 | `serial_wait` | block until `text` shows up, up to `seconds` |
@@ -21,11 +26,14 @@ are. It needs Python 3.9 or later with `pyserial`, `opencv-python` and
 | `serial_login` | wait for `login:` and log in (root by default) |
 | `serial_reset` | send `ESC ESC ESC RESET`; the kernel resets the machine from its serial interrupt |
 | `serial_tail` | the last N characters, read or not |
-| `vga_devices` | the capture devices, by DirectShow index and name |
+| `vga_devices` | the capture devices, by DirectShow index and name, with the default marked |
+| `vga_select` | which capture device `vga_capture` uses by default |
 | `vga_capture` | one frame of the screen as a PNG (also `C:\CORSAC\bench\vga.png`) |
 
-Everything the machine says is appended to `C:\CORSAC\bench\serial.log`
-from the moment the server starts.
+Every serial tool takes an optional `port`; any number of ports can be open
+at once, each with its own log.
+Everything a port receives is appended to `C:\CORSAC\bench\serial-<PORT>.log`
+from the moment it is opened; the default port is opened when the server starts.
 
 ## The code assistant (this repository)
 
