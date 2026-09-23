@@ -306,8 +306,14 @@ public sealed class Vt
         return rowsOut.ToArray();
     }
 
+    /// Lines ever pushed into the scrollback, so a view scrolled back can hold still as more arrive.
+    public long Pushed;
+    /// The size of a character cell in pixels, for the xterm window-size reports; set by the view.
+    public int CellW = 8, CellH = 16;
+
     void PushScrollback(Cell[] row)
     {
+        Pushed++;
         Scrollback.Add(row);
         if (Scrollback.Count > ScrollbackLimit) Scrollback.RemoveRange(0, Scrollback.Count - ScrollbackLimit);
     }
@@ -664,6 +670,20 @@ public sealed class Vt
             foreach (var p in _params) DecMode(p, final == 'h');
             return;
         }
+        // THE QUESTIONS XTERM ANSWERS, which is all a machine on a serial
+        // line can learn about the terminal: nothing is ever volunteered.
+        if (_prefix == '>' && final == 'c' && P0(0) == 0)
+        {
+            // Secondary device attributes: a VT100 (0), firmware 10, no options.
+            Reply?.Invoke(Encoding.ASCII.GetBytes("\x1b[>0;10;0c"));
+            return;
+        }
+        if (_prefix == '>' && final == 'q' && P0(0) == 0)
+        {
+            // XTVERSION: the terminal's name and version, in a DCS.
+            Reply?.Invoke(Encoding.ASCII.GetBytes("\x1bP>|corsac-bench 1.1\x1b\\"));
+            return;
+        }
         if (_prefix == '>' || _prefix == '=' || _inter != '\0')
         {
             if (_inter == '!' && final == 'p') FullReset();       // DECSTR, near enough
@@ -763,7 +783,18 @@ public sealed class Vt
             }
             case 's': SaveCursor(); break;
             case 'u': RestoreCursor(); break;
-            case 't': break;
+            case 't':
+                // xterm's window operations: only the reports. Nothing here
+                // moves, resizes or retitles the bench's window.
+                switch (P0(0))
+                {
+                    case 11: Reply?.Invoke(Encoding.ASCII.GetBytes("\x1b[1t")); break;                                  // not iconified
+                    case 14: Reply?.Invoke(Encoding.ASCII.GetBytes($"\x1b[4;{Rows * CellH};{Cols * CellW}t")); break;   // text area in pixels
+                    case 16: Reply?.Invoke(Encoding.ASCII.GetBytes($"\x1b[6;{CellH};{CellW}t")); break;                 // a cell in pixels
+                    case 18: Reply?.Invoke(Encoding.ASCII.GetBytes($"\x1b[8;{Rows};{Cols}t")); break;                   // text area in characters
+                    case 19: Reply?.Invoke(Encoding.ASCII.GetBytes($"\x1b[9;{Rows};{Cols}t")); break;                   // screen in characters
+                }
+                break;
         }
     }
 

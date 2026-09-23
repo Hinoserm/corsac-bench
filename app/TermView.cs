@@ -15,6 +15,7 @@ public sealed class TermView : Control
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 30 };
     long _drawn = -1;
     int _scroll;                        // lines back from the live screen
+    long _pushedSeen;                   // the terminal's Pushed at the last paint
     Font _font = null!, _bold = null!;
     Size _cell;
     (int line, int col)? _selA, _selB;
@@ -76,6 +77,7 @@ public sealed class TermView : Control
         _bold = new Font(f, FontStyle.Bold);
         var m = TextRenderer.MeasureText("WWWWWWWWWW", _font, Size.Empty, TextFormatFlags.NoPadding);
         _cell = new Size((int)Math.Round(m.Width / 10.0), m.Height);
+        lock (Line.Term) { Line.Term.CellW = _cell.Width; Line.Term.CellH = _cell.Height; }
         FitNow();
         Invalidate();
     }
@@ -147,6 +149,11 @@ public sealed class TermView : Control
             _reverse = vt.ReverseScreen;
             g.Clear(Screen0);
             int back = vt.AltScreen ? 0 : vt.Scrollback.Count;
+            // SCROLLED BACK, THE TEXT HOLDS STILL: lines arriving below push
+            // the view up by as many, so what is being read does not slide
+            // away. At the bottom, the view follows the output.
+            if (_scroll > 0) _scroll += (int)(vt.Pushed - _pushedSeen);
+            _pushedSeen = vt.Pushed;
             _scroll = Math.Clamp(_scroll, 0, back);
             int first = back - _scroll;         // first line shown, in scrollback-then-screen order
             UpdateBar(back, vt.Rows);
