@@ -8,12 +8,30 @@ beyond the session id the bench hands out, so any number of these can run.
 The standard library only; any Python 3.8 or later, Windows or Linux.
 
   CORSAC_BENCH_URL  http://127.0.0.1:7825/mcp
-  CORSAC_BENCH_EXE  C:\\CORSAC\\bench\\app\\CorsacBench.exe
+  CORSAC_BENCH_EXE  where CorsacBench.exe is; otherwise beside this script,
+                    then C:\\CORSAC\\bench\\app, then %LOCALAPPDATA%\\corsac-bench\\app
 """
 import http.client, json, os, subprocess, sys, threading, time, urllib.parse, urllib.request
 
 URL = os.environ.get("CORSAC_BENCH_URL", "http://127.0.0.1:7825/mcp")
-EXE = os.environ.get("CORSAC_BENCH_EXE", r"C:\CORSAC\bench\app\CorsacBench.exe")
+def find_exe():
+    """The bench program: named, beside this script, or in one of the two
+    places it is usually installed."""
+    named = os.environ.get("CORSAC_BENCH_EXE")
+    if named:
+        return named
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CorsacBench.exe")
+    candidates = [here, r"C:\CORSAC\bench\app\CorsacBench.exe"]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(os.path.join(local, "corsac-bench", "app", "CorsacBench.exe"))
+    for c in candidates:
+        if os.path.exists(windows_path(c) if os.name != "nt" and c[1:2] == ":" else c):
+            return c
+    return candidates[1]
+
+
+EXE = None
 
 session = None
 out_lock = threading.Lock()
@@ -29,10 +47,12 @@ def windows_path(p):
 
 
 def start_bench():
+    global EXE
     with start_lock:
         if reachable():
             return
-        exe = windows_path(EXE)
+        EXE = EXE or find_exe()
+        exe = windows_path(EXE) if EXE[1:2] == ":" else EXE
         flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0     # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         subprocess.Popen([exe], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          cwd=os.path.dirname(exe), creationflags=flags, start_new_session=os.name != "nt")

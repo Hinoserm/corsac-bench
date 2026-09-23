@@ -235,7 +235,7 @@ public static class Recordings
             return System.IO.Path.Combine(Folder, $"{string.Join("+", ports)}-{DateTime.Now:yyyyMMdd-HHmmss}.{(format == RecordFormat.Raw ? "bin" : "log")}");
         path = path.Trim();
         if (path.StartsWith("/"))
-            return $@"\\wsl.localhost\{Bench.Config.WslDistro}" + path.Replace('/', '\\');
+            return $@"\\wsl.localhost\{Bench.WslDistro()}" + path.Replace('/', '\\');
         if (!System.IO.Path.IsPathRooted(path)) return System.IO.Path.Combine(Folder, path);
         return path;
     }

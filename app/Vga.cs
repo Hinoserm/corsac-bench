@@ -35,7 +35,7 @@ sealed class VgaHelper
     void Start()
     {
         if (_p is { HasExited: false }) return;
-        var psi = new ProcessStartInfo(Bench.Config.Python)
+        var psi = new ProcessStartInfo(Bench.PythonPath())
         {
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false, CreateNoWindow = true,
@@ -43,7 +43,7 @@ sealed class VgaHelper
         psi.ArgumentList.Add(HelperPath);
         psi.ArgumentList.Add("serve");
         psi.ArgumentList.Add(Environment.ProcessId.ToString());
-        _p = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + Bench.Config.Python);
+        _p = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + Bench.PythonPath());
         _p.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) _error = e.Data; };
         _p.BeginErrorReadLine();
         _in = _p.StandardInput.BaseStream;

@@ -24,12 +24,14 @@ public sealed class Client
 
 public sealed class BenchConfig
 {
-    public string DefaultPort { get; set; } = "COM5";
+    public string DefaultPort { get; set; } = "COM1";
     public int Baud { get; set; } = 115200;
-    public string Vga { get; set; } = "00-1 Pro Capture Dual DVI";
+    /// A part of the default capture device's name; empty is the first device.
+    public string Vga { get; set; } = "";
     public int Listen { get; set; } = 7825;
-    public string Python { get; set; } = @"C:\Program Files\Python39\python.exe";
-    public List<string> OpenAtStart { get; set; } = new() { "COM5" };
+    /// The Python the capture helper runs under; empty finds one (PATH, then Program Files).
+    public string Python { get; set; } = "";
+    public List<string> OpenAtStart { get; set; } = new();
     public string Font { get; set; } = "Cascadia Mono";
     public float FontSize { get; set; } = 10f;
     public int Cols { get; set; } = 80;
@@ -39,22 +41,66 @@ public sealed class BenchConfig
     public List<ScreenWindowConfig> ScreenWindows { get; set; } = new();
     public List<TerminalWindowConfig> TerminalWindows { get; set; } = new();
     public List<RecordingConfig> Recordings { get; set; } = new();
-    /// Which WSL distribution a recording path starting with / is in.
-    public string WslDistro { get; set; } = "FedoraLinux-43";
+    /// Which WSL distribution a recording path starting with / is in; empty is the default one.
+    public string WslDistro { get; set; } = "";
+    /// What serial_reset and the Reset button send. The default is the CORSAC
+    /// kernel's: ESC ESC ESC RESET, taken from the serial interrupt.
+    public string ResetSequence { get; set; } = "\u001b\u001b\u001bRESET";
+    /// What serial_reset waits for after sending it: the machine's first words.
+    public string ResetBanner { get; set; } = "CORSAC boot";
+    /// The shell prompt serial_command waits for, at the start of a line.
+    public string ShellPrompt { get; set; } = "# ";
 }
 
 public static class Bench
 {
-    public static string Dir = Environment.GetEnvironmentVariable("CORSAC_DIR") ?? @"C:\CORSAC\bench";
+    /// Where bench.json, the logs, the recordings and vga.png live: CORSAC_DIR,
+    /// else C:\CORSAC\bench where that already exists, else the user's own
+    /// local application data.
+    public static string Dir = Environment.GetEnvironmentVariable("CORSAC_DIR")
+        ?? (Directory.Exists(@"C:\CORSAC\bench") ? @"C:\CORSAC\bench"
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "corsac-bench"));
     public static BenchConfig Config = new();
     static string ConfigPath => Path.Combine(Dir, "bench.json");
 
-    public static readonly byte[] Magic = Encoding.ASCII.GetBytes("\x1b\x1b\x1bRESET");   // os/kernel/drivers/uart8250.cor, MagicByte
-    static readonly byte[] Prompt = Encoding.ASCII.GetBytes("\n# ");
+    public static byte[] Magic => Encoding.Latin1.GetBytes(Config.ResetSequence);
+    static byte[] Prompt => Encoding.Latin1.GetBytes("\n" + Config.ShellPrompt);
+
+    /// The Python to run the capture helper with: the configured one, else
+    /// the first real python.exe on PATH (not the Store's stub), else the
+    /// newest under Program Files.
+    public static string PythonPath()
+    {
+        if (Config.Python != "" && File.Exists(Config.Python)) return Config.Python;
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+        {
+            if (dir == "" || dir.Contains("WindowsApps", StringComparison.OrdinalIgnoreCase)) continue;
+            var candidate = Path.Combine(dir.Trim(), "python.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+        var programs = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var found = Directory.Exists(programs) ? Directory.GetDirectories(programs, "Python3*").OrderByDescending(d => d.Length).ThenByDescending(d => d).Select(d => Path.Combine(d, "python.exe")).FirstOrDefault(File.Exists) : null;
+        return found ?? "python.exe";
+    }
+
+    /// The WSL distribution /-paths are in: the configured one, else Windows' default.
+    public static string WslDistro()
+    {
+        if (Config.WslDistro != "") return Config.WslDistro;
+        try
+        {
+            using var lxss = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Lxss");
+            if (lxss?.GetValue("DefaultDistribution") is string guid)
+                using (var d = lxss.OpenSubKey(guid))
+                    if (d?.GetValue("DistributionName") is string name) return name;
+        }
+        catch { }
+        return "Ubuntu";
+    }
 
     public static readonly Dictionary<string, Line> Lines = new();
     public static readonly Dictionary<string, Client> Clients = new();
-    public static string DefaultPort = "COM5";
+    public static string DefaultPort = "COM1";
     public static string DefaultVga = "";
 
     public static event Action? LinesChanged;
@@ -315,7 +361,7 @@ public static class Bench
                     if (!found) { SetCursor(c, l, at); return Text(got) + "\n[no login prompt within the time]"; }
                     Thread.Sleep(500);
                     l.Send(Encoding.Latin1.GetBytes((Str(a, "user") ?? "root") + "\n"), who);
-                    var (found2, got2) = l.Wait(ref at, Encoding.ASCII.GetBytes("# "), TimeSpan.FromSeconds(90));
+                    var (found2, got2) = l.Wait(ref at, Encoding.Latin1.GetBytes(Config.ShellPrompt), TimeSpan.FromSeconds(90));
                     SetCursor(c, l, at);
                     return Text(got.Concat(got2).ToArray()) + (found2 ? "" : "\n[no shell prompt after logging in]");
                 });
@@ -324,7 +370,7 @@ public static class Bench
                 {
                     long at = l.End;
                     l.Send(Magic, who);
-                    var (found, got) = l.Wait(ref at, Encoding.ASCII.GetBytes("CORSAC boot"), TimeSpan.FromSeconds(Num(a, "seconds", 30)));
+                    var (found, got) = l.Wait(ref at, Encoding.Latin1.GetBytes(Config.ResetBanner), TimeSpan.FromSeconds(Num(a, "seconds", 30)));
                     SetCursor(c, l, at);
                     return (found ? "machine reset; loader is up\n" : "no loader banner seen after the reset sequence\n") + Text(got);
                 });

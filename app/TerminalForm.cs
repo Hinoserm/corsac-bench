@@ -108,7 +108,7 @@ public sealed class TerminalForm : Form
         _bar.Items.Add(_settings);
         _bar.Items.Add(_record);
         _bar.Items.Add(new ToolStripSeparator());
-        _bar.Items.Add(new ToolStripButton("Reset machine", null, (_, _) => ResetMachine()) { ToolTipText = "Send ESC ESC ESC RESET: the CORSAC kernel resets the machine" });
+        _bar.Items.Add(new ToolStripButton("Reset machine", null, (_, _) => ResetMachine()) { ToolTipText = "Send the reset sequence (ResetSequence in bench.json; by default the CORSAC kernel's ESC ESC ESC RESET)" });
         _bar.Items.Add(new ToolStripButton("Break", null, (_, _) => SendBreak()) { ToolTipText = "Hold the line in BREAK for 250 ms" });
         _bar.Items.Add(new ToolStripSeparator());
         _bar.Items.Add(_size);

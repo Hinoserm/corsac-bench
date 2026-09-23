@@ -1,176 +1,148 @@
-# The bench
+# corsac-bench
 
-The real machine's serial consoles and VGA capture belong to one program,
-`CorsacBench.exe`, which lives in the Windows notification area. Every
-assistant session shares it over MCP, and so does the person at the bench,
-through its terminal and screen windows. A port opened by anyone is open
-for everyone. Every session keeps its own place in each port's stream, so
-what one session reads, another still gets.
+A test bench for a real machine, on one Windows PC: its serial consoles and
+its video capture cards, owned by one program in the notification area and
+shared with any number of AI assistant sessions over
+[MCP](https://modelcontextprotocol.io), and with you, through terminal and
+screen windows on the desktop.
+
+It was written to develop an operating system on real 486 and Pentium
+hardware, where the only ways to talk to the machine are a serial cable and
+a VGA capture card, and several assistant sessions and a person all want
+them at once. Windows gives a COM port to one process only; this is that
+process, and everybody else goes through it.
 
 ```
  session ─ benchlink.py ─┐
- session ─ benchlink.py ─┼─ HTTP 127.0.0.1:7825/mcp ─ CorsacBench.exe ─┬─ COM5, COMn ...
- session ─ benchlink.py ─┘                            (tray icon)       ├─ terminal window
+ session ─ benchlink.py ─┼─ HTTP 127.0.0.1:7825/mcp ─ CorsacBench.exe ─┬─ COM ports
+ session ─ benchlink.py ─┘                            (tray icon)       ├─ terminal and screen windows
                                                                         └─ vgagrab.py ─ capture cards
 ```
 
-| file | what it is |
-| --- | --- |
-| `app/` | CorsacBench.exe (C#, WinForms): the ports, the MCP endpoint, the tray icon, the terminal and the screens |
-| `benchlink.py` | what a session runs: MCP on stdio, relayed to the bench; starts the bench if it is not running |
-| `vgagrab.py` | the capture helper the bench keeps running: DirectShow through OpenCV |
+## What it does
 
-## The windows
+**Serial ports**
+- Any number open at once, shared: a port opened or closed by anyone is
+  opened or closed for everyone.
+- Every session keeps its own place in each port's stream, so what one reads
+  another still gets.
+- Commands from different sessions take turns on a port instead of
+  interleaving.
+- Every byte a port receives also goes to an always-on log,
+  `serial-<PORT>.log`.
+- **Recording** to files:
+  - any number at once, of one port or several into one file
+  - raw bytes, plain text (escape sequences removed), or text with a
+    timestamp on every line
+  - optionally with what was sent, marked with who sent it
+  - running recordings resume after a restart
+- RTS/CTS and XON/XOFF, any speed and framing, BREAK, and a configurable
+  reset sequence for machines that watch their serial line for one.
 
-**Terminal** (click the tray icon). Any number of windows, each with a tab
-for each of its ports. They are remembered and reopened at the next start.
-- **New window** on the toolbar, and tray → Terminal → **Open COMn in its own
-  window**.
-- Right-click a tab to record it, move it to a new window, show it in another
-  window as well, or close the tab (the port stays as it is).
-- The first window takes any port that is opened and not shown anywhere else.
-- When one port is shown in two windows, the window last typed in decides
-  the terminal's size.
+**Terminal windows**
+- As many as you like, each with a tab per port, remembered across restarts.
+- An xterm-compatible terminal with the whole VT100:
+  - 256-colour and direct colour, line drawing, the alternate screen
+  - double-width and double-height lines, 132 columns, VT52 mode
+  - the application keypad
+  - a 10,000-line scrollback, selection, copy and paste
+- The window you type in is the same terminal the sessions see:
+  `serial_screen` returns exactly what it shows.
 
-It is an xterm-compatible terminal, with the whole VT100 besides:
+**Screen windows**
+- Any or all DirectShow capture devices, live, in as many windows as you like.
+- By default the capture follows the input signal's own resolution, so text
+  mode and every graphics mode arrive pixel for pixel. This works with cards
+  that report the input resolution as their first format, such as Magewell
+  Pro Capture.
+- Each device has settings for when the video mode changes:
+  - monitor 4:3, square pixels, or stretch
+  - fit, whole multiples, or actual size
+  - resize the window, or keep it
+  - black-border trimming, frame rate, smoothing
+- `vga_capture` gives a session one frame as a PNG.
 
-- 256-colour and direct colour, DEC line drawing and the alternate screen,
-  so nano and the like draw properly
-- a 10,000-line scrollback
-- select with the mouse; right-click, Ctrl+Shift+C or Ctrl+Insert copies
-- Ctrl+Shift+V or Shift+Insert pastes
-- Alt+key sends ESC+key (nano's M- commands); Backspace sends DEL
+## Requirements
 
-It shows everything the port receives, whoever is driving it. The toolbar
-has:
+- Windows 10 or 11, with the [.NET 10 Desktop
+  Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+- For capture: Python 3.9 or later with `opencv-python` and `pygrabber`
+  (`pip install opencv-python pygrabber`). Serial works without it.
+- For the bridge: any Python 3.8 or later, on Windows or in WSL. It uses the
+  standard library only.
 
-- open and close
-- line settings: speed, framing, flow control
-- **Reset machine** (the kernel's `ESC ESC ESC RESET`)
-- BREAK
-- the terminal's size and text size
+## Install
 
-The status bar shows who opened the port, which session is running a
-command on it, what every session is doing, and ● REC while the port is being
-recorded.
+Download a release, or build it with the .NET 10 SDK, on Windows or in WSL:
 
-**Recording.** Record → **Record COMn...**, or **Record several ports into
-one file...**, or right-click a tab. Any number of recordings can run at
-once, and a port can be in several. Each one is:
+```
+dotnet publish app -c Release -o <folder>
+```
 
-- **ports:** one, or several into one file, each line marked with its port
-- **file:** any Windows path, a WSL path (`/home/...`, through
-  `\\wsl.localhost\<distro>`, `WslDistro` in bench.json), or a name in
-  `C:\CORSAC\bench\recordings`, which is also where an unnamed one goes
-- **form:** raw bytes as received; plain text (escape sequences and CRs
-  removed); or plain text with a timestamp on every line (the default)
-- **what was sent** as well, optionally: whole lines marked with who sent
-  them (`<<< window: ls -l\r`, `<<< session (f3b347): ...`)
-- **append or replace** an existing file
+The output folder contains `CorsacBench.exe`, `vgagrab.py` and
+`benchlink.py`. Run `CorsacBench.exe`. It puts itself in the notification
+area, and in the Run key so it starts at login ("Start with Windows" on its
+menu). Starting it again brings its windows forward. `--screens` opens the
+screen windows.
 
-Running recordings are in bench.json and carry on, appending, after the
-bench restarts. Record, and tray → Recordings, list them with their sizes
-and stop them. This is separate from the bench's own always-on
-`serial-<PORT>.log`.
+## Connect a session
 
-**Screens**. Any or all of the capture devices, live. **Devices** picks
-which. Double-click a picture to show it alone, and again to go back. A
-picture's own settings are on its right-click menu. They are kept per
-device in `bench.json`, and they say what happens when the machine changes
-video mode:
+Any MCP client that runs a command runs the bridge:
 
-| setting | choices |
-| --- | --- |
-| Capture size | **Follow the signal** (default): the card is asked for the input's resolution once a second, and the capture reopens at the new size when it changes, so 720x400 text, 640x480 and 1024x768 each arrive pixel for pixel. Or a fixed size from those the card offers, which the card scales to. |
-| Shape | **Like a monitor**: every mode fills 4:3, as a CRT shows it. **Square pixels**. **Stretch to the window**. |
-| Scale | **Fit the window**; **Whole multiples** (crisp text); **Actual size** |
-| When the mode changes | **Resize the window to the new picture**, or **Keep the window** and refit the picture inside it |
-| Trim black borders | crops even letterbox or pillarbox borders, e.g. at a fixed capture size. It takes effect once three frames agree, so a dark scene does not make the picture jump. |
-| Frame rate, Smooth scaling, Show information | |
+```json
+{ "mcpServers": { "corsac-bench": {
+    "command": "python",
+    "args": ["C:\\path\\to\\benchlink.py"] } } }
+```
 
-The menu also has pause, copy picture, save picture, **Use for
-vga_capture**, and a list of the recent mode changes.
+From WSL, use `python3` and the path in WSL. With WSL's mirrored networking,
+127.0.0.1 reaches the bench. The bridge starts `CorsacBench.exe` if nothing
+answers. It looks for it in `CORSAC_BENCH_EXE`, then beside itself, then in
+`C:\CORSAC\bench\app`, then `%LOCALAPPDATA%\corsac-bench\app`.
 
-A device is opened only while something is looking at it (a visible view,
-or a `vga_capture` within the last 20 seconds). Other programs can have it
-the rest of the time.
+A client that speaks streamable HTTP can use `http://127.0.0.1:7825/mcp`
+directly. `http://127.0.0.1:7825/status` is a plain-text summary.
 
 ## Tools
 
 | tool | what it does |
 | --- | --- |
-| `serial_ports` | every COM port on the machine, which are open on the bench with what settings, and the default |
-| `serial_open` | connect to a port (baud, bytesize, parity, stopbits, rtscts, xonxoff; 115200 8N1 by default) and make it the default, for everyone |
-| `serial_close` | disconnect, for everyone, so another program can have the port |
-| `serial_configure` | change a port's settings, live if it is open |
-| `serial_default` | which port the other tools use when none is named |
-| `serial_status` | settings, bytes received, bytes this session has not read, last error, the other sessions |
-| `serial_read` | everything received since this session last looked, after collecting for `seconds` |
-| `serial_send` | send text (newline appended unless `newline: false`) |
-| `serial_wait` | block until `text` shows up, up to `seconds` |
-| `serial_command` | run a shell command at a `# ` prompt and return its output; commands from different sessions take turns |
-| `serial_login` | wait for `login:` and log in (root by default) |
-| `serial_reset` | send `ESC ESC ESC RESET`; the kernel resets the machine from its serial interrupt |
+| `serial_ports` | every COM port, which are open on the bench with what settings, and the default |
+| `serial_open` / `serial_close` | open or close a port, for everyone |
+| `serial_configure` | speed, framing and flow control, live |
+| `serial_default` | which port the tools use when none is named |
+| `serial_status` | settings, bytes received and unread, errors, the other sessions |
+| `serial_read` | what arrived since this session last looked |
+| `serial_send` | send text |
+| `serial_wait` | wait until some text arrives |
+| `serial_command` | run a shell command at the prompt and return its output |
+| `serial_login` | wait for `login:` and log in |
+| `serial_reset` | send the reset sequence and wait for the boot banner |
 | `serial_tail` | the last N characters, read or not |
-| `serial_screen` | the terminal screen as the window shows it, with scrollback if asked |
-| `serial_record_start` | record one or more ports to a file: `ports`, `path`, `format` (raw, text, timestamped), `include_sent`, `append` |
-| `serial_record_stop` | stop recordings by `id`, `path`, `port`, or `all` |
-| `serial_record_list` | the recordings running, with their files and sizes |
-| `bench_clients` | the sessions connected, and what each is doing |
-| `vga_devices` | the capture devices, by index and name, with the default marked |
-| `vga_select` | which capture device `vga_capture` uses by default |
-| `vga_capture` | one frame at the signal's own resolution, as a PNG (also `C:\CORSAC\bench\vga.png`) |
+| `serial_screen` | the terminal screen as drawn, with scrollback |
+| `serial_record_start` / `_stop` / `_list` | record ports to files |
+| `bench_clients` | the connected sessions and what each is doing |
+| `vga_devices` / `vga_select` / `vga_capture` | the capture devices, and a frame from one |
 
-Everything a port receives is appended to
-`C:\CORSAC\bench\serial-<PORT>.log`, with what each session sent marked by
-its name. The ports open at the last exit are opened again at start.
+## Settings
 
-## Building and installing
+`bench.json` lives in `CORSAC_DIR` if that is set. Otherwise it is in
+`C:\CORSAC\bench` if that exists, and otherwise in
+`%LOCALAPPDATA%\corsac-bench`. The logs, recordings and `vga.png` go in the
+same folder. Most settings are set from the windows. The rest:
 
-It needs the .NET 10 SDK; the one in WSL builds it. The Windows side needs
-the .NET 10 Desktop Runtime, and Python 3.9 or later with `opencv-python`
-and `pygrabber` for the capture helper.
+| setting | default | |
+| --- | --- | --- |
+| `Listen` | 7825 | the MCP port on 127.0.0.1 |
+| `DefaultPort` | COM1 | |
+| `OpenAtStart` | none | kept as ports are opened and closed |
+| `Vga` | the first device | a part of the default capture device's name |
+| `Python` | found on PATH | for the capture helper |
+| `WslDistro` | Windows' default | where recording paths like `/home/...` point |
+| `ResetSequence` | `ESC ESC ESC RESET` | what the reset tool and button send |
+| `ResetBanner` | `CORSAC boot` | what the reset tool waits for |
+| `ShellPrompt` | `# ` | what `serial_command` and `serial_login` wait for |
 
-```
-dotnet publish tools/bench/app -c Release -o /mnt/c/CORSAC/bench/app
-```
+## License
 
-Before publishing over a running copy, **Exit** it from the tray menu: a
-running program's files cannot be replaced. It puts itself in the Run key
-so it starts at login ("Start with Windows" on the tray menu). Settings are
-in `C:\CORSAC\bench\bench.json`:
-
-- `DefaultPort`, `Baud`, `Vga`
-- `Listen` (7825)
-- `Python`
-- terminal size and font
-- per-device screen settings
-
-## Connecting a session
-
-A session in WSL (`.mcp.json` here, or the assistant's user-level MCP
-configuration for every project):
-
-```json
-{ "mcpServers": { "corsac-bench": { "command": "python3",
-  "args": ["/home/hinoserm/projects/corsac86-kernel/tools/bench/benchlink.py"] } } }
-```
-
-The bridge talks to `http://127.0.0.1:7825/mcp`, which WSL's mirrored
-networking reaches. If nothing answers, it starts
-`C:\CORSAC\bench\app\CorsacBench.exe` and waits for it.
-
-A Windows client uses the copy of the bridge beside the program:
-
-```json
-{ "mcpServers": { "corsac-bench": { "command": "C:\\Program Files\\Python39\\python.exe",
-  "args": ["C:\\CORSAC\\bench\\app\\benchlink.py"] } } }
-```
-
-The desktop app's MCP file is its `*_desktop_config.json`. For the
-Microsoft Store build it is under
-`%LOCALAPPDATA%\Packages\<the app's package>\LocalCache\Roaming\<the app>\`, not
-the plain `%APPDATA%`. Restart the app after changing it.
-
-A client that speaks streamable HTTP can use `http://127.0.0.1:7825/mcp`
-directly. `http://127.0.0.1:7825/status` is a plain-text summary.
+MIT; see [LICENSE](LICENSE).
