@@ -30,6 +30,7 @@ static class Program
         try { Mcp.Start(Bench.Config.Listen); }
         catch (Exception e) { Mcp.Port = Bench.Config.Listen; Mcp.Error = $"could not listen on 127.0.0.1:{Bench.Config.Listen}: {e.Message}"; }
         Bench.OpenAtStart();
+        Recordings.Restore();
         TrayIcon.Autostart(Bench.Config.StartWithWindows);
 
         var tray = new TrayIcon();
@@ -44,7 +45,7 @@ static class Program
     /// Every unhandled exception is written to crash.log. One on the UI thread
     /// is survived; one on another thread ends the program, and the log says why.
     /// </summary>
-    static void Crashed(Exception? e, bool fatal)
+    public static void Crashed(Exception? e, bool fatal)
     {
         try
         {

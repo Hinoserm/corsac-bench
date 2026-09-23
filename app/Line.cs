@@ -35,6 +35,12 @@ public sealed class Line
     public string Error = "";
     public string OpenedBy = "";
     public readonly Vt Term = new();
+    /// <summary>
+    /// The view whose window decides the terminal's size when the port is
+    /// shown in more than one: the one last given the keyboard. Two views
+    /// each fitting the one screen to their own window would fight.
+    /// </summary>
+    public object? SizeOwner;
 
     /// <summary>Held by whoever is running a command, so two clients' commands do not interleave.</summary>
     public readonly SemaphoreSlim Conversation = new(1, 1);
@@ -50,6 +56,8 @@ public sealed class Line
 
     /// <summary>Raised on the reader thread with every chunk received.</summary>
     public event Action<Line, byte[]>? Received;
+    /// <summary>Raised with every write, and who wrote it ("window", "terminal", or a session's label).</summary>
+    public event Action<Line, byte[], string>? Sent;
     /// <summary>Raised when the port opens, closes or changes settings.</summary>
     public event Action<Line>? Changed;
 
@@ -206,6 +214,7 @@ public sealed class Line
         var p = _port;
         if (p == null || !p.IsOpen) throw new InvalidOperationException($"{Name} is not open");
         lock (p) p.Write(data, 0, data.Length);
+        Sent?.Invoke(this, data, who);
         if (who != "terminal" && who != "window")
             Log(Encoding.Latin1.GetBytes($"\n<<< [{who}] ") .Concat(data).Concat(new byte[] { (byte)'\n' }).ToArray());
     }

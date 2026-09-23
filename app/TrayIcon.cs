@@ -14,7 +14,6 @@ public sealed class TrayIcon : ApplicationContext
     readonly NotifyIcon _icon;
     readonly ContextMenuStrip _menu = new();
     readonly Control _ui = new();          // marshals work onto the UI thread
-    TerminalForm? _terminal;
 
     public TrayIcon()
     {
@@ -69,25 +68,26 @@ public sealed class TrayIcon : ApplicationContext
     public static void ShowTerminal() => _it?.ShowTerminalCore();
     public static void ShowScreens() => _it?.ShowScreensCore();
 
-    void ShowTerminalCore()
-    {
-        if (_terminal == null || _terminal.IsDisposed)
-        {
-            _terminal = new TerminalForm();
-            var area = Screen.PrimaryScreen!.WorkingArea;
-            _terminal.Location = new Point(area.X + 40, area.Y + 40);
-        }
-        _terminal.Show();
-        if (_terminal.WindowState == FormWindowState.Minimized) _terminal.WindowState = FormWindowState.Normal;
-        _terminal.Activate();
-    }
+    void ShowTerminalCore() => TerminalForm.ShowAll();
+
+    /// A notification from the tray icon.
+    public static void Tell(string title, string text) => Post(() => _it?._icon.ShowBalloonTip(5000, title, text.Length > 250 ? text[..250] : text, ToolTipIcon.Info));
 
     void ShowScreensCore() => ScreensForm.ShowAll();
 
     void BuildMenu()
     {
         _menu.Items.Clear();
-        _menu.Items.Add(new ToolStripMenuItem("Terminal", null, (_, _) => ShowTerminal()) { Font = new Font(_menu.Font, FontStyle.Bold) });
+        var terminals = new ToolStripMenuItem("Terminal") { Font = new Font(_menu.Font, FontStyle.Bold) };
+        terminals.DropDownItems.Add(new ToolStripMenuItem("Show the terminal windows", null, (_, _) => ShowTerminal()) { Font = new Font(_menu.Font, FontStyle.Bold) });
+        terminals.DropDownItems.Add(new ToolStripMenuItem("New terminal window", null, (_, _) => TerminalForm.NewWindow(null)));
+        terminals.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var p in Bench.ComPorts().Concat(Bench.Lines.Keys).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p.Length).ThenBy(p => p))
+        {
+            var port = p.ToUpperInvariant();
+            terminals.DropDownItems.Add(new ToolStripMenuItem($"Open {port} in its own window", null, (_, _) => TerminalForm.NewWindow(port)));
+        }
+        _menu.Items.Add(terminals);
         var screens = new ToolStripMenuItem("Screens");
         screens.DropDownItems.Add(new ToolStripMenuItem("Show the screen windows", null, (_, _) => ShowScreens()) { Font = new Font(_menu.Font, FontStyle.Bold) });
         screens.DropDownItems.Add(new ToolStripMenuItem("New screen window", null, (_, _) => ScreensForm.NewWindow()));
@@ -128,6 +128,24 @@ public sealed class TrayIcon : ApplicationContext
         if (sessions.DropDownItems.Count == 0) sessions.DropDownItems.Add(new ToolStripMenuItem("none connected") { Enabled = false });
         _menu.Items.Add(sessions);
 
+        var recordings = new ToolStripMenuItem("Recordings");
+        List<Recording> active;
+        lock (Recordings.Active) active = Recordings.Active.ToList();
+        foreach (var r in active)
+        {
+            var rec = r;
+            recordings.DropDownItems.Add(new ToolStripMenuItem("Stop " + rec.Describe(), null, (_, _) => Recordings.Stop(rec)));
+        }
+        if (active.Count == 0) recordings.DropDownItems.Add(new ToolStripMenuItem("nothing is being recorded") { Enabled = false });
+        else recordings.DropDownItems.Add(new ToolStripMenuItem("Stop all", null, (_, _) => Recordings.StopAll()));
+        recordings.DropDownItems.Add(new ToolStripSeparator());
+        recordings.DropDownItems.Add(new ToolStripMenuItem("Open the recordings folder", null, (_, _) =>
+        {
+            Directory.CreateDirectory(Recordings.Folder);
+            TerminalForm.OpenPath(Recordings.Folder);
+        }));
+        _menu.Items.Add(recordings);
+
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Start with Windows", null, (_, _) =>
         {
@@ -167,6 +185,8 @@ public sealed class TrayIcon : ApplicationContext
             foreach (var l in Bench.Lines.Values)
                 if (l.IsOpen) { try { l.Close("exit"); } catch { } }
         ScreensForm.CloseAllForExit();
+        TerminalForm.CloseAllForExit();
+        Recordings.CloseForExit();
         Vga.Stop();
         ExitThread();
     }

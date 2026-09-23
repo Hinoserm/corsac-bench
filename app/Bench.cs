@@ -37,6 +37,10 @@ public sealed class BenchConfig
     public bool StartWithWindows { get; set; } = true;
     public Dictionary<string, ScreenSettings> Screens { get; set; } = new();
     public List<ScreenWindowConfig> ScreenWindows { get; set; } = new();
+    public List<TerminalWindowConfig> TerminalWindows { get; set; } = new();
+    public List<RecordingConfig> Recordings { get; set; } = new();
+    /// Which WSL distribution a recording path starting with / is in.
+    public string WslDistro { get; set; } = "FedoraLinux-43";
 }
 
 public static class Bench
@@ -54,6 +58,8 @@ public static class Bench
     public static string DefaultVga = "";
 
     public static event Action? LinesChanged;
+    /// <summary>Raised once for each Line when it is first made.</summary>
+    public static event Action<Line>? LineMade;
     public static event Action? ClientsChanged;
 
     public static void Load()
@@ -115,6 +121,7 @@ public static class Bench
                 l = new Line(name);
                 l.Changed += _ => { Save(); LinesChanged?.Invoke(); };
                 Lines[name] = l;
+                LineMade?.Invoke(l);
                 LinesChanged?.Invoke();
             }
             return l;
@@ -334,6 +341,33 @@ public static class Bench
                     sb.Append($"[{l.Name} terminal {l.Term.Cols}x{l.Term.Rows}, cursor at row {l.Term.CursorY + 1} column {l.Term.CursorX + 1}{(l.Term.AltScreen ? ", full-screen program" : "")}]");
                 }
                 return Ok(sb.ToString());
+            }
+            case "serial_record_start":
+            {
+                var names = (a["ports"] is JsonArray arr ? arr.Select(n => n!.ToString()) : (Str(a, "ports") ?? Str(a, "port") ?? DefaultPort).Split(','))
+                    .Select(p => p.Trim()).Where(p => p != "").ToList();
+                var format = (Str(a, "format") ?? "timestamped").Trim().ToLowerInvariant() switch
+                {
+                    "raw" => RecordFormat.Raw,
+                    "text" => RecordFormat.Text,
+                    "timestamped" or "" => RecordFormat.Timestamped,
+                    var other => throw new ArgumentException($"format is raw, text or timestamped, not \"{other}\""),
+                };
+                var rec = Recordings.Start(names, Str(a, "path"), format, Bool(a, "include_sent") ?? true, Bool(a, "append") ?? true, who);
+                return Ok("recording " + rec.Describe());
+            }
+            case "serial_record_stop":
+            {
+                List<Recording> gone;
+                if (Bool(a, "all") == true) return Ok($"stopped {Recordings.StopAll()} recording(s)");
+                var which = Str(a, "id") ?? Str(a, "path") ?? Str(a, "port") ?? throw new ArgumentException("say which: id, path, port, or all");
+                gone = Recordings.Stop(which);
+                return Ok(gone.Count == 0 ? $"no recording matches \"{which}\"" : "stopped:\n" + string.Join("\n", gone.Select(r => r.Describe())));
+            }
+            case "serial_record_list":
+            {
+                lock (Recordings.Active)
+                    return Ok(Recordings.Active.Count == 0 ? "nothing is being recorded" : string.Join("\n", Recordings.Active.Select(r => r.Describe())));
             }
             case "bench_clients":
             {

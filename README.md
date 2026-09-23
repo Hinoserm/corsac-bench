@@ -22,8 +22,17 @@ what one session reads, another still gets.
 
 ## The windows
 
-**Terminal** (click the tray icon). A tab for each port. It is an
-xterm-compatible terminal:
+**Terminal** (click the tray icon). Any number of windows, each with a tab
+for each of its ports. They are remembered and reopened at the next start.
+- **New window** on the toolbar, and tray → Terminal → **Open COMn in its own
+  window**.
+- Right-click a tab to record it, move it to a new window, show it in another
+  window as well, or close the tab (the port stays as it is).
+- The first window takes any port that is opened and not shown anywhere else.
+- When one port is shown in two windows, the window last typed in decides
+  the terminal's size.
+
+It is an xterm-compatible terminal, with the whole VT100 besides:
 
 - 256-colour and direct colour, DEC line drawing and the alternate screen,
   so nano and the like draw properly
@@ -42,7 +51,27 @@ has:
 - the terminal's size and text size
 
 The status bar shows who opened the port, which session is running a
-command on it, and what every session is doing.
+command on it, what every session is doing, and ● REC while the port is being
+recorded.
+
+**Recording.** Record → **Record COMn...**, or **Record several ports into
+one file...**, or right-click a tab. Any number of recordings can run at
+once, and a port can be in several. Each one is:
+
+- **ports:** one, or several into one file, each line marked with its port
+- **file:** any Windows path, a WSL path (`/home/...`, through
+  `\\wsl.localhost\<distro>`, `WslDistro` in bench.json), or a name in
+  `C:\CORSAC\bench\recordings`, which is also where an unnamed one goes
+- **form:** raw bytes as received; plain text (escape sequences and CRs
+  removed); or plain text with a timestamp on every line (the default)
+- **what was sent** as well, optionally: whole lines marked with who sent
+  them (`<<< window: ls -l\r`, `<<< session (f3b347): ...`)
+- **append or replace** an existing file
+
+Running recordings are in bench.json and carry on, appending, after the
+bench restarts. Record, and tray → Recordings, list them with their sizes
+and stop them. This is separate from the bench's own always-on
+`serial-<PORT>.log`.
 
 **Screens**. Any or all of the capture devices, live. **Devices** picks
 which. Double-click a picture to show it alone, and again to go back. A
@@ -84,6 +113,9 @@ the rest of the time.
 | `serial_reset` | send `ESC ESC ESC RESET`; the kernel resets the machine from its serial interrupt |
 | `serial_tail` | the last N characters, read or not |
 | `serial_screen` | the terminal screen as the window shows it, with scrollback if asked |
+| `serial_record_start` | record one or more ports to a file: `ports`, `path`, `format` (raw, text, timestamped), `include_sent`, `append` |
+| `serial_record_stop` | stop recordings by `id`, `path`, `port`, or `all` |
+| `serial_record_list` | the recordings running, with their files and sizes |
 | `bench_clients` | the sessions connected, and what each is doing |
 | `vga_devices` | the capture devices, by index and name, with the default marked |
 | `vga_select` | which capture device `vga_capture` uses by default |

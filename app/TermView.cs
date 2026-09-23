@@ -60,7 +60,11 @@ public sealed class TermView : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _tick.Dispose();
+        if (disposing)
+        {
+            _tick.Dispose();
+            if (Line.SizeOwner == this) Line.SizeOwner = null;
+        }
         base.Dispose(disposing);
     }
 
@@ -84,6 +88,8 @@ public sealed class TermView : Control
     /// <summary>The terminal is always as large as the view: resizing the window resizes the screen, as xterm does.</summary>
     public void FitNow()
     {
+        if (Line.SizeOwner is TermView owner && owner != this && !owner.IsDisposed && owner.Visible) return;
+        Line.SizeOwner ??= this;
         if (_cell.Width == 0 || ClientSize.Width < _cell.Width * 4 || ClientSize.Height < _cell.Height * 2) return;
         int cols = Math.Max(20, (ClientSize.Width - _bar.Width - 4) / _cell.Width);
         int rows = Math.Max(5, (ClientSize.Height - 4) / _cell.Height);
@@ -487,6 +493,11 @@ public sealed class TermView : Control
         e.Handled = true;
     }
 
-    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        if (Line.SizeOwner != this) { Line.SizeOwner = this; FitNow(); }
+        Invalidate();
+    }
     protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
 }
