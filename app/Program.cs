@@ -23,6 +23,9 @@ static class Program
             return;
         }
         ApplicationConfiguration.Initialize();
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => Crashed(e.Exception, false);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Crashed(e.ExceptionObject as Exception, true);
         Bench.Load();
         try { Mcp.Start(Bench.Config.Listen); }
         catch (Exception e) { Mcp.Port = Bench.Config.Listen; Mcp.Error = $"could not listen on 127.0.0.1:{Bench.Config.Listen}: {e.Message}"; }
@@ -35,6 +38,21 @@ static class Program
         if (screens) TrayIcon.ShowScreens();
         Application.Run(tray);
         Bench.Save();
+    }
+
+    /// <summary>
+    /// Every unhandled exception is written to crash.log. One on the UI thread
+    /// is survived; one on another thread ends the program, and the log says why.
+    /// </summary>
+    static void Crashed(Exception? e, bool fatal)
+    {
+        try
+        {
+            Directory.CreateDirectory(Bench.Dir);
+            File.AppendAllText(Path.Combine(Bench.Dir, "crash.log"),
+                $"---- {DateTime.Now:yyyy-MM-dd HH:mm:ss} {(fatal ? "fatal" : "survived")}\n{e}\n");
+        }
+        catch { }
     }
 
     /// <summary>A second start of the program sets the event; this one answers by showing a window.</summary>

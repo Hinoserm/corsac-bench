@@ -5,7 +5,7 @@ The bench app starts this once and keeps it; each device it is asked about is
 opened, read continuously by a thread, and closed again when nobody has asked
 for a frame for a while, so another program can have it.
 
-  python vgagrab.py serve     # requests on stdin, one JSON line each
+  python vgagrab.py serve [bench pid]   # requests on stdin, one JSON line each; leaves when the bench does
   python vgagrab.py devices   # one JSON line: the devices
   python vgagrab.py grab <device name or part of it> <out.png>
 
@@ -24,7 +24,7 @@ reopened whenever that changes. The Magewell Pro Capture cards offer the
 input's own resolution as their first format, and a query of it costs ~50 ms,
 so it is polled once a second. Python 3.9, opencv-python, pygrabber.
 """
-import json, sys, threading, time
+import json, os, sys, threading, time
 
 import cv2
 import pygrabber.dshow_graph as dg
@@ -166,7 +166,23 @@ def device(name, want=None, start=True):
     return d
 
 
+def watch_parent(pid):
+    """Leave when the bench does: a bench killed outright does not always close our stdin."""
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenProcess(0x00100000, False, pid)      # SYNCHRONIZE
+    if not handle:
+        return
+
+    def wait():
+        k32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        os._exit(0)
+    threading.Thread(target=wait, daemon=True).start()
+
+
 def serve():
+    if len(sys.argv) > 2 and os.name == "nt":
+        watch_parent(int(sys.argv[2]))
     out = sys.stdout.buffer
     for raw in sys.stdin.buffer:
         raw = raw.strip()
