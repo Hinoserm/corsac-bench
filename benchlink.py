@@ -121,9 +121,19 @@ def main():
         t = threading.Thread(target=relay, args=(raw,), daemon=True)
         t.start()
         calls = [c for c in calls if c.is_alive()] + [t]
-    # The client has gone; answers still owed are finished first.
+    # The client has gone; answers still owed are finished first, then the
+    # bench is told this session is over.
     for c in calls:
         c.join()
+    if session:
+        try:
+            u = urllib.parse.urlsplit(URL)
+            c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=3)
+            c.request("DELETE", u.path or "/", headers={"Mcp-Session-Id": session})
+            c.getresponse().read()
+            c.close()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

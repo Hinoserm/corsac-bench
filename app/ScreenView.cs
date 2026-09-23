@@ -49,7 +49,18 @@ public sealed class ScreenSettings
     public ShapeChange OnChange { get; set; } = ShapeChange.ResizeWindow;
     public int MaxFps { get; set; } = 30;
     public bool ShowInfo { get; set; } = true;
-    public bool Shown { get; set; }
+}
+
+/// <summary>One screens window: which devices it shows, how, and where it was.</summary>
+public sealed class ScreenWindowConfig
+{
+    public List<string> Devices { get; set; } = new();
+    public string Layout { get; set; } = "grid";
+    public int X { get; set; } = -1;
+    public int Y { get; set; } = -1;
+    public int W { get; set; } = 1000;
+    public int H { get; set; } = 800;
+    public bool Open { get; set; } = true;
 }
 
 public sealed class ScreenView : Control
@@ -72,6 +83,8 @@ public sealed class ScreenView : Control
     /// <summary>Raised on the UI thread when the picture changes shape; carries the size it wants shown at.</summary>
     public event Action<ScreenView, Size>? ShapeChanged;
     public event Action<ScreenView>? Solo;
+    /// <summary>The view asks for a window of its own.</summary>
+    public event Action<ScreenView>? PopOut;
 
     public ScreenView(string device, ScreenSettings settings)
     {
@@ -107,7 +120,7 @@ public sealed class ScreenView : Control
             if (_paused || !Visible && IsHandleCreated) { Thread.Sleep(200); continue; }
             try
             {
-                var f = Vga.Frame(Device, _seq, 1.0);
+                var f = Vga.Frame(Device, _seq, 0.25);
                 if (f.Seq != _seq)
                 {
                     var trim = S.TrimBorders ? FindPicture(f.Picture) : new Rectangle(Point.Empty, f.Picture.Size);
@@ -325,6 +338,7 @@ public sealed class ScreenView : Control
         m.Items.Add(Item("Trim black borders", S.TrimBorders, () => S.TrimBorders = !S.TrimBorders));
         m.Items.Add(Item("Show information", S.ShowInfo, () => S.ShowInfo = !S.ShowInfo));
         m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(new ToolStripMenuItem("Open in a new window", null, (_, _) => PopOut?.Invoke(this)));
         m.Items.Add(new ToolStripMenuItem(_paused ? "Resume" : "Pause", null, (_, _) => { _paused = !_paused; Invalidate(); }));
         m.Items.Add(new ToolStripMenuItem("Copy picture", null, (_, _) => { using var b = Snapshot(); if (b != null) Clipboard.SetImage(b); }));
         m.Items.Add(new ToolStripMenuItem("Save picture...", null, (_, _) => SaveAs()));

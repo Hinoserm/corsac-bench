@@ -22,18 +22,19 @@ public sealed class VgaFrame : IDisposable
     public void Dispose() => Picture.Dispose();
 }
 
-public static class Vga
+/// <summary>One vgagrab.py process. Each device gets its own, so a device that is slow or has no signal never holds up another.</summary>
+sealed class VgaHelper
 {
-    static Process? _helper;
-    static Stream? _in, _out;
-    static readonly object Gate = new();
-    public static string Error = "";
+    Process? _p;
+    Stream? _in, _out;
+    readonly object _gate = new();
+    string _error = "";
 
     static string HelperPath => Path.Combine(AppContext.BaseDirectory, "vgagrab.py");
 
-    static void Start()
+    void Start()
     {
-        if (_helper is { HasExited: false }) return;
+        if (_p is { HasExited: false }) return;
         var psi = new ProcessStartInfo(Bench.Config.Python)
         {
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
@@ -41,39 +42,40 @@ public static class Vga
         };
         psi.ArgumentList.Add(HelperPath);
         psi.ArgumentList.Add("serve");
-        _helper = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + Bench.Config.Python);
-        _helper.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Error = e.Data; };
-        _helper.BeginErrorReadLine();
-        _in = _helper.StandardInput.BaseStream;
-        _out = _helper.StandardOutput.BaseStream;
+        _p = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + Bench.Config.Python);
+        _p.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) _error = e.Data; };
+        _p.BeginErrorReadLine();
+        _in = _p.StandardInput.BaseStream;
+        _out = _p.StandardOutput.BaseStream;
     }
 
-    public static void Stop()
+    public void Stop()
     {
-        lock (Gate)
+        lock (_gate)
         {
+            // Its stdin closing is its signal to go.
             try { _in?.Close(); } catch { }
-            try { if (_helper is { HasExited: false } && !_helper.WaitForExit(2000)) _helper.Kill(); } catch { }
-            _helper = null;
+            try { if (_p is { HasExited: false } && !_p.WaitForExit(2000)) _p.Kill(); } catch { }
+            _p = null;
         }
     }
 
-    static string ReadLine(Stream s)
+    string ReadLine(Stream s)
     {
         var b = new List<byte>(256);
         while (true)
         {
             int c = s.ReadByte();
-            if (c < 0) throw new IOException("the capture helper went away" + (Error != "" ? ": " + Error : ""));
+            if (c < 0) throw new IOException("the capture helper went away" + (_error != "" ? ": " + _error : ""));
             if (c == '\n') return Encoding.UTF8.GetString(b.ToArray());
             b.Add((byte)c);
         }
     }
 
     /// <summary>One request, its reply and any raw bytes after it. Restarts a helper that died.</summary>
-    static (JsonObject reply, byte[] data) Ask(JsonObject req)
+    public (JsonObject reply, byte[] data) Ask(JsonObject req)
     {
-        lock (Gate)
+        lock (_gate)
         {
             for (int attempt = 0; ; attempt++)
             {
@@ -94,11 +96,35 @@ public static class Vga
                 }
                 catch (IOException) when (attempt == 0)
                 {
-                    try { _helper?.Kill(); } catch { }
-                    _helper = null;
+                    try { _p?.Kill(); } catch { }
+                    _p = null;
                 }
             }
         }
+    }
+}
+
+public static class Vga
+{
+    static readonly Dictionary<string, VgaHelper> Helpers = new();
+
+    /// <summary>The helper for a device; "" is the one that only lists devices.</summary>
+    static VgaHelper For(string device)
+    {
+        lock (Helpers)
+        {
+            if (!Helpers.TryGetValue(device, out var h)) Helpers[device] = h = new VgaHelper();
+            return h;
+        }
+    }
+
+    static (JsonObject reply, byte[] data) Ask(JsonObject req) => For(req["device"]?.ToString() ?? "").Ask(req);
+
+    public static void Stop()
+    {
+        List<VgaHelper> all;
+        lock (Helpers) { all = Helpers.Values.ToList(); Helpers.Clear(); }
+        foreach (var h in all) h.Stop();
     }
 
     public static List<string> Devices() =>

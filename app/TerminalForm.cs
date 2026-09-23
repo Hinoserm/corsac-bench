@@ -53,7 +53,8 @@ public sealed class TerminalForm : Form
 
         SyncTabs();
         ShowLine(Bench.Line(null));
-        FitWindow();
+        Shown += (_, _) => SizeFor(Bench.Config.Cols, Bench.Config.Rows);
+        ResizeEnd += (_, _) => Remember();
     }
 
     sealed record PortItem(string Name, string Text)
@@ -86,15 +87,22 @@ public sealed class TerminalForm : Form
         foreach (var l in lines.OrderBy(l => l.Name.Length).ThenBy(l => l.Name))
             if (!_tabs.TabPages.ContainsKey(l.Name))
             {
-                var view = new TermView(l) { Dock = DockStyle.Fill, Fit = Bench.Config.FitTerminal };
-                view.Status += s => _state.Text = s;
-                var page = new TabPage(l.Name) { Name = l.Name };
-                page.Controls.Add(view);
-                _tabs.TabPages.Add(page);
+                AddTab(l);
             }
         foreach (TabPage p in _tabs.TabPages)
             p.Text = p.Name + (Bench.Lines.TryGetValue(p.Name, out var l) && l.IsOpen ? "" : " (closed)");
         UpdateStatus();
+    }
+
+    void AddTab(Line l)
+    {
+        var view = new TermView(l) { Dock = DockStyle.Fill };
+        view.Status += s => _state.Text = s;
+        // DECCOLM: the machine asks for 80 or 132 columns and the window follows.
+        l.Term.ColumnsWanted = cols => { if (IsHandleCreated) BeginInvoke(() => { if (Current?.Line == l) SizeFor(cols, l.Term.Rows); }); };
+        var page = new TabPage(l.Name) { Name = l.Name };
+        page.Controls.Add(view);
+        _tabs.TabPages.Add(page);
     }
 
     void ShowLine(Line l)
@@ -102,11 +110,7 @@ public sealed class TerminalForm : Form
         SyncTabs();
         if (!_tabs.TabPages.ContainsKey(l.Name))
         {
-            var view = new TermView(l) { Dock = DockStyle.Fill, Fit = Bench.Config.FitTerminal };
-            view.Status += s => _state.Text = s;
-            var page = new TabPage(l.Name) { Name = l.Name };
-            page.Controls.Add(view);
-            _tabs.TabPages.Add(page);
+            AddTab(l);
         }
         _tabs.SelectedTab = _tabs.TabPages[l.Name];
         UpdateStatus();
@@ -157,44 +161,50 @@ public sealed class TerminalForm : Form
     void BuildSize()
     {
         _size.DropDownItems.Clear();
-        var v = Current;
-        foreach (var (c, r) in new[] { (80, 25), (80, 43), (80, 50), (100, 37), (132, 25), (132, 43), (132, 50) })
-            _size.DropDownItems.Add(new ToolStripMenuItem($"{c} x {r}", null, (_, _) =>
-            {
-                Bench.Config.Cols = c; Bench.Config.Rows = r; Bench.Config.FitTerminal = false; Bench.Save();
-                foreach (var t in AllViews()) { t.Fit = false; lock (t.Line.Term) t.Line.Term.Resize(c, r); }
-                FitWindow();
-            }) { Checked = !Bench.Config.FitTerminal && Bench.Config.Cols == c && Bench.Config.Rows == r });
-        _size.DropDownItems.Add(new ToolStripMenuItem("Fit to the window", null, (_, _) =>
-        {
-            Bench.Config.FitTerminal = !Bench.Config.FitTerminal; Bench.Save();
-            foreach (var t in AllViews()) t.Fit = Bench.Config.FitTerminal;
-        }) { Checked = Bench.Config.FitTerminal });
+        var now = Current?.Line.Term;
+        foreach (var (c, r) in new[] { (80, 24), (80, 25), (80, 43), (80, 50), (100, 37), (132, 25), (132, 43), (132, 50) })
+            _size.DropDownItems.Add(new ToolStripMenuItem($"{c} x {r}", null, (_, _) => SizeFor(c, r))
+                { Checked = now != null && now.Cols == c && now.Rows == r });
+        _size.DropDownItems.Add(new ToolStripMenuItem("(or drag the window to any size)") { Enabled = false });
         _size.DropDownItems.Add(new ToolStripSeparator());
         foreach (var pt in new[] { 8f, 9f, 10f, 11f, 12f, 14f, 16f })
             _size.DropDownItems.Add(new ToolStripMenuItem($"Text {pt} pt", null, (_, _) =>
             {
+                int c = now?.Cols ?? Bench.Config.Cols, r = now?.Rows ?? Bench.Config.Rows;
                 Bench.Config.FontSize = pt; Bench.Save();
                 foreach (var t in AllViews()) t.SetFont(Bench.Config.Font, pt);
-                if (!Bench.Config.FitTerminal) FitWindow();
+                SizeFor(c, r);
             }) { Checked = Bench.Config.FontSize == pt });
     }
 
     IEnumerable<TermView> AllViews() => _tabs.TabPages.Cast<TabPage>().SelectMany(p => p.Controls.OfType<TermView>());
 
-    /// <summary>Sizes the window to show the whole terminal screen.</summary>
-    void FitWindow()
+    /// <summary>Sizes the window so the terminal comes out `cols` by `rows`.</summary>
+    public void SizeFor(int cols, int rows)
     {
         var v = Current;
-        if (v == null || Bench.Config.FitTerminal) return;
-        foreach (var t in AllViews()) lock (t.Line.Term) t.Line.Term.Resize(Bench.Config.Cols, Bench.Config.Rows);
-        var want = v.WantedSize(Bench.Config.Cols, Bench.Config.Rows);
-        var chrome = Size - ClientSize;
-        var inner = ClientSize - v.ClientSize;
-        if (v.ClientSize.Width == 0) inner = new Size(8, _bar.Height + _status.Height + 28);
+        if (v == null) return;
+        if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
+        var want = v.WantedSize(cols, rows);
+        var extra = Size - v.ClientSize;
+        if (v.ClientSize.Width == 0) extra = Size - ClientSize + new Size(8, _bar.Height + _status.Height + 28);
         var area = Screen.FromControl(this).WorkingArea;
-        Size = new Size(Math.Min(area.Width, want.Width + inner.Width + chrome.Width), Math.Min(area.Height, want.Height + inner.Height + chrome.Height));
-        if (!area.Contains(Bounds)) Location = new Point(area.X + 40, area.Y + 40);
+        Size = new Size(Math.Min(area.Width, want.Width + extra.Width), Math.Min(area.Height, want.Height + extra.Height));
+        if (!area.Contains(Bounds)) Location = new Point(Math.Max(area.X, Math.Min(Left, area.Right - Width)), Math.Max(area.Y, Math.Min(Top, area.Bottom - Height)));
+        foreach (var t in AllViews()) t.FitNow();
+        Remember();
+    }
+
+    /// <summary>The size the terminal has now is the one the next start opens at.</summary>
+    void Remember()
+    {
+        var vt = Current?.Line.Term;
+        if (vt == null || WindowState != FormWindowState.Normal) return;
+        if (Bench.Config.Cols != vt.Cols || Bench.Config.Rows != vt.Rows)
+        {
+            Bench.Config.Cols = vt.Cols; Bench.Config.Rows = vt.Rows;
+            Bench.Save();
+        }
     }
 
     void UpdateStatus()

@@ -15,7 +15,6 @@ public sealed class TrayIcon : ApplicationContext
     readonly ContextMenuStrip _menu = new();
     readonly Control _ui = new();          // marshals work onto the UI thread
     TerminalForm? _terminal;
-    ScreensForm? _screens;
 
     public TrayIcon()
     {
@@ -83,19 +82,23 @@ public sealed class TrayIcon : ApplicationContext
         _terminal.Activate();
     }
 
-    void ShowScreensCore()
-    {
-        if (_screens == null || _screens.IsDisposed) _screens = new ScreensForm();
-        _screens.Show();
-        if (_screens.WindowState == FormWindowState.Minimized) _screens.WindowState = FormWindowState.Normal;
-        _screens.Activate();
-    }
+    void ShowScreensCore() => ScreensForm.ShowAll();
 
     void BuildMenu()
     {
         _menu.Items.Clear();
         _menu.Items.Add(new ToolStripMenuItem("Terminal", null, (_, _) => ShowTerminal()) { Font = new Font(_menu.Font, FontStyle.Bold) });
-        _menu.Items.Add(new ToolStripMenuItem("Screens", null, (_, _) => ShowScreens()));
+        var screens = new ToolStripMenuItem("Screens");
+        screens.DropDownItems.Add(new ToolStripMenuItem("Show the screen windows", null, (_, _) => ShowScreens()) { Font = new Font(_menu.Font, FontStyle.Bold) });
+        screens.DropDownItems.Add(new ToolStripMenuItem("New screen window", null, (_, _) => ScreensForm.NewWindow()));
+        screens.DropDownItems.Add(new ToolStripSeparator());
+        try
+        {
+            foreach (var d in Vga.Devices())
+                screens.DropDownItems.Add(new ToolStripMenuItem("Open " + d, null, (_, _) => ScreensForm.ShowDevice(d)));
+        }
+        catch (Exception e) { screens.DropDownItems.Add(new ToolStripMenuItem("capture devices: " + e.Message) { Enabled = false }); }
+        _menu.Items.Add(screens);
         _menu.Items.Add(new ToolStripSeparator());
 
         var ports = new ToolStripMenuItem("Ports");
@@ -158,9 +161,12 @@ public sealed class TrayIcon : ApplicationContext
     void Exit()
     {
         _icon.Visible = false;
+        Bench.Save();
+        Bench.Exiting = true;
         lock (Bench.Lines)
             foreach (var l in Bench.Lines.Values)
                 if (l.IsOpen) { try { l.Close("exit"); } catch { } }
+        ScreensForm.CloseAllForExit();
         Vga.Stop();
         ExitThread();
     }

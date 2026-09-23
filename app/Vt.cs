@@ -17,6 +17,16 @@ public enum CellAttr : byte
     Reverse = 16,
     Hidden = 32,
     Strike = 64,
+    Blink = 128,
+}
+
+/// <summary>A VT100 line's size: DECSWL, DECDWL, DECDHL top and bottom halves.</summary>
+public enum LineSize : byte
+{
+    Normal,
+    DoubleWidth,
+    DoubleTop,
+    DoubleBottom,
 }
 
 public struct Cell
@@ -34,6 +44,9 @@ enum VtState
     Ground,
     Escape,
     EscapeCharset,
+    EscapeHash,
+    Vt52Row,
+    Vt52Column,
     Csi,
     Osc,
     OscEscape,
@@ -55,14 +68,32 @@ public sealed class Vt
     public int CursorX, CursorY;
     public bool CursorVisible = true;
     public bool AppCursorKeys, AppKeypad, BracketedPaste;
+    /// <summary>DECANM reset: the VT52 compatibility mode.</summary>
+    public bool Vt52;
+    /// <summary>DECSCNM: dark characters on a light screen.</summary>
+    public bool ReverseScreen;
+    /// <summary>LNM: a line feed also returns the carriage, and Return sends CR LF.</summary>
+    public bool NewLineMode;
+    /// <summary>KAM: the keyboard is locked.</summary>
+    public bool KeyboardLocked;
+    /// <summary>Set once anything blinks, so a view only runs its blink clock when it matters.</summary>
+    public bool Blinks;
+    /// <summary>Sent in answer to ENQ; the VT100's is empty until set up.</summary>
+    public string Answerback = "";
+    /// <summary>DECCOLM asked for 80 or 132 columns; the owner resizes its window to suit.</summary>
+    public Action<int>? ColumnsWanted;
     bool _autoWrap = true, _originMode, _insertMode, _pendingWrap;
     int _top, _bottom;                  // scrolling region, inclusive
     Cell _pen = Cell.Blank;
     bool[] _tabs = Array.Empty<bool>();
-    bool _g0Lines, _g1Lines, _shiftOut;
+    // The G0 and G1 character sets: 'B' US ASCII, 'A' UK, '0' DEC special graphics.
+    char _g0 = 'B', _g1 = 'B';
+    bool _shiftOut;
+    int _vt52Row;
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<Cell[], object> _lineSizes = new();
     char _last = ' ';
 
-    struct Saved { public int X, Y; public Cell Pen; public bool Origin, Wrap, G0, G1, Shift; }
+    struct Saved { public int X, Y; public Cell Pen; public bool Origin, Wrap, Shift; public char G0, G1; }
     Saved _saved, _savedAlt;
 
     VtState _state;
@@ -114,6 +145,17 @@ public sealed class Vt
 
     public Cell[] Row(int y) => _screen[y];
 
+    public LineSize SizeOf(Cell[] row) => _lineSizes.TryGetValue(row, out var s) ? (LineSize)s : LineSize.Normal;
+
+    void SetSize(Cell[] row, LineSize size)
+    {
+        _lineSizes.Remove(row);
+        if (size != LineSize.Normal) _lineSizes.Add(row, size);
+    }
+
+    /// <summary>The columns usable on the cursor's line: half of them on a double-width one.</summary>
+    int LineCols => SizeOf(_screen[CursorY]) == LineSize.Normal ? Cols : Cols / 2;
+
     public void Resize(int cols, int rows)
     {
         if (cols < 2 || rows < 2 || (cols == Cols && rows == Rows)) return;
@@ -138,6 +180,7 @@ public sealed class Vt
         {
             var n = NewRow(cols);
             Array.Copy(r, n, Math.Min(cols, r.Length));
+            SetSize(n, SizeOf(r));
             rowsOut.Add(n);
         }
         while (rowsOut.Count > rows)
@@ -204,7 +247,9 @@ public sealed class Vt
         if (c < 0x20 && _state != VtState.Osc && _state != VtState.Dcs)
         {
             if (c == 0x1B) { Enter(VtState.Escape); return; }
-            if (c == 0x18 || c == 0x1A) { _state = VtState.Ground; return; }
+            if (c == 0x18) { _state = VtState.Ground; return; }
+            // SUB cancels a sequence and shows the error character in its place.
+            if (c == 0x1A) { _state = VtState.Ground; Print('▒'); return; }
             Control(c);
             return;
         }
@@ -218,9 +263,32 @@ public sealed class Vt
                 EscapeFinal(c);
                 return;
             case VtState.EscapeCharset:
-                if (_inter == '(') _g0Lines = c == '0';
-                else if (_inter == ')') _g1Lines = c == '0';
+                // 1 and 2 are the alternate character ROM, standard and special: the same sets here.
+                char set = c == '0' || c == '2' ? '0' : c == 'A' ? 'A' : 'B';
+                if (_inter == '(') _g0 = set;
+                else if (_inter == ')') _g1 = set;
                 _state = VtState.Ground;
+                return;
+            case VtState.EscapeHash:
+                _state = VtState.Ground;
+                switch (c)
+                {
+                    case '3': SetSize(_screen[CursorY], LineSize.DoubleTop); ClampToLine(); break;
+                    case '4': SetSize(_screen[CursorY], LineSize.DoubleBottom); ClampToLine(); break;
+                    case '5': SetSize(_screen[CursorY], LineSize.Normal); break;
+                    case '6': SetSize(_screen[CursorY], LineSize.DoubleWidth); ClampToLine(); break;
+                    case '8': AlignmentTest(); break;
+                }
+                return;
+            case VtState.Vt52Row:
+                _vt52Row = c - 32;
+                _state = VtState.Vt52Column;
+                return;
+            case VtState.Vt52Column:
+                _state = VtState.Ground;
+                CursorY = Math.Clamp(_vt52Row, 0, Rows - 1);
+                CursorX = Math.Clamp(c - 32, 0, LineCols - 1);
+                _pendingWrap = false;
                 return;
             case VtState.Csi:
                 CsiByte(c);
@@ -253,6 +321,9 @@ public sealed class Vt
     {
         switch (c)
         {
+            case (char)0x05:
+                if (Answerback.Length > 0) Reply?.Invoke(Encoding.Latin1.GetBytes(Answerback));
+                break;
             case '\a': break;
             case '\b':
                 if (_pendingWrap) _pendingWrap = false;
@@ -260,10 +331,11 @@ public sealed class Vt
                 break;
             case '\t':
                 _pendingWrap = false;
-                do CursorX++; while (CursorX < Cols - 1 && !_tabs[CursorX]);
-                CursorX = Math.Min(CursorX, Cols - 1);
+                do CursorX++; while (CursorX < LineCols - 1 && !_tabs[CursorX]);
+                CursorX = Math.Min(CursorX, LineCols - 1);
                 break;
             case '\n': case '\v': case '\f':
+                if (NewLineMode) CursorX = 0;
                 LineFeed();
                 break;
             case '\r':
@@ -322,7 +394,10 @@ public sealed class Vt
 
     void Print(char c)
     {
-        if ((_shiftOut ? _g1Lines : _g0Lines) && c >= '`' && c <= '~') c = LineDrawing(c);
+        char set = _shiftOut ? _g1 : _g0;
+        if (set == '0' && c >= '`' && c <= '~') c = LineDrawing(c);
+        else if (set == 'A' && c == '#') c = '£';
+        int cols = LineCols;
         if (_pendingWrap && _autoWrap)
         {
             CursorX = 0;
@@ -330,25 +405,73 @@ public sealed class Vt
         }
         _pendingWrap = false;
         var row = _screen[CursorY];
+        cols = LineCols;
+        CursorX = Math.Min(CursorX, cols - 1);
         if (_insertMode)
-            Array.Copy(row, CursorX, row, CursorX + 1, Cols - CursorX - 1);
+            Array.Copy(row, CursorX, row, CursorX + 1, cols - CursorX - 1);
         var cell = _pen; cell.Ch = c;
         row[CursorX] = cell;
         _last = c;
-        if (CursorX == Cols - 1) _pendingWrap = true;
+        if (CursorX == cols - 1) _pendingWrap = true;
         else CursorX++;
+    }
+
+    void ClampToLine()
+    {
+        CursorX = Math.Min(CursorX, LineCols - 1);
+        _pendingWrap = false;
+    }
+
+    /// <summary>DECALN: the screen filled with E, for lining up a monitor.</summary>
+    void AlignmentTest()
+    {
+        _top = 0; _bottom = Rows - 1;
+        for (int y = 0; y < Rows; y++)
+        {
+            _screen[y] = NewRow(Cols, new Cell { Ch = 'E', Fg = -1, Bg = -1 });
+        }
+        CursorX = CursorY = 0;
+        _pendingWrap = false;
+    }
+
+    /// <summary>The VT52's escapes, which are not ANSI ones.</summary>
+    void Vt52Escape(char c)
+    {
+        _state = VtState.Ground;
+        _pendingWrap = false;
+        switch (c)
+        {
+            case 'A': CursorY = Math.Max(0, CursorY - 1); break;
+            case 'B': CursorY = Math.Min(Rows - 1, CursorY + 1); break;
+            case 'C': CursorX = Math.Min(LineCols - 1, CursorX + 1); break;
+            case 'D': CursorX = Math.Max(0, CursorX - 1); break;
+            case 'F': _g0 = '0'; _shiftOut = false; break;
+            case 'G': _g0 = 'B'; break;
+            case 'H': CursorX = CursorY = 0; break;
+            case 'I': ReverseIndex(); break;
+            case 'J': EraseDisplay(0); break;
+            case 'K': EraseLine(0); break;
+            case 'Y': _state = VtState.Vt52Row; break;
+            case 'Z': Reply?.Invoke(Encoding.ASCII.GetBytes("\x1b/Z")); break;
+            case '=': AppKeypad = true; break;
+            case '>': AppKeypad = false; break;
+            case '<': Vt52 = false; break;
+        }
     }
 
     void EscapeFinal(char c)
     {
         _state = VtState.Ground;
+        if (Vt52) { Vt52Escape(c); return; }
         switch (c)
         {
             case '[': Enter(VtState.Csi); break;
             case ']': _osc.Clear(); _state = VtState.Osc; break;
             case 'P': case 'X': case '^': case '_': _state = VtState.Dcs; break;
             case '(': case ')': case '*': case '+': _inter = c; _state = VtState.EscapeCharset; break;
-            case '#': case '%': case ' ': _inter = c; _state = VtState.EscapeCharset; break;
+            case '#': _state = VtState.EscapeHash; break;
+            case '%': case ' ': _inter = c; _state = VtState.EscapeCharset; break;
+            case 'Z': Reply?.Invoke(Encoding.ASCII.GetBytes("\x1b[?1;2c")); break;   // DECID
             case 'D': LineFeed(); break;
             case 'E': CursorX = 0; LineFeed(); break;
             case 'M': ReverseIndex(); break;
@@ -372,13 +495,14 @@ public sealed class Vt
         _autoWrap = true; _originMode = _insertMode = _pendingWrap = false;
         CursorVisible = true;
         AppCursorKeys = AppKeypad = BracketedPaste = false;
-        _g0Lines = _g1Lines = _shiftOut = false;
+        Vt52 = ReverseScreen = NewLineMode = KeyboardLocked = false;
+        _g0 = _g1 = 'B'; _shiftOut = false;
         ResetTabs();
     }
 
     void SaveCursor()
     {
-        var s = new Saved { X = CursorX, Y = CursorY, Pen = _pen, Origin = _originMode, Wrap = _autoWrap, G0 = _g0Lines, G1 = _g1Lines, Shift = _shiftOut };
+        var s = new Saved { X = CursorX, Y = CursorY, Pen = _pen, Origin = _originMode, Wrap = _autoWrap, G0 = _g0, G1 = _g1, Shift = _shiftOut };
         if (AltScreen) _savedAlt = s; else _saved = s;
     }
 
@@ -388,7 +512,7 @@ public sealed class Vt
         CursorX = Math.Min(s.X, Cols - 1); CursorY = Math.Min(s.Y, Rows - 1);
         _pen = s.Pen.Ch == 0 ? Cell.Blank : s.Pen;
         _originMode = s.Origin; _autoWrap = s.Wrap || s.Pen.Ch == 0;
-        _g0Lines = s.G0; _g1Lines = s.G1; _shiftOut = s.Shift;
+        _g0 = s.G0 == 0 ? 'B' : s.G0; _g1 = s.G1 == 0 ? 'B' : s.G1; _shiftOut = s.Shift;
         _pendingWrap = false;
     }
 
@@ -440,7 +564,7 @@ public sealed class Vt
         {
             case 'A': CursorY = Math.Max(CursorY < _top ? 0 : _top, CursorY - P(0, 1)); _pendingWrap = false; break;
             case 'B': case 'e': CursorY = Math.Min(CursorY > _bottom ? Rows - 1 : _bottom, CursorY + P(0, 1)); _pendingWrap = false; break;
-            case 'C': case 'a': CursorX = Math.Min(Cols - 1, CursorX + P(0, 1)); _pendingWrap = false; break;
+            case 'C': case 'a': CursorX = Math.Min(LineCols - 1, CursorX + P(0, 1)); _pendingWrap = false; break;
             case 'D': CursorX = Math.Max(0, CursorX - P(0, 1)); _pendingWrap = false; break;
             case 'E': CursorX = 0; CursorY = Math.Min(_bottom, CursorY + P(0, 1)); _pendingWrap = false; break;
             case 'F': CursorX = 0; CursorY = Math.Max(_top, CursorY - P(0, 1)); _pendingWrap = false; break;
@@ -493,7 +617,13 @@ public sealed class Vt
                 else if (P0(0) == 3) Array.Fill(_tabs, false);
                 break;
             case 'h': case 'l':
-                foreach (var p in _params) if (p == 4) _insertMode = final == 'h';
+                foreach (var p in _params)
+                    switch (p)
+                    {
+                        case 2: KeyboardLocked = final == 'h'; break;     // KAM
+                        case 4: _insertMode = final == 'h'; break;        // IRM
+                        case 20: NewLineMode = final == 'h'; break;       // LNM
+                    }
                 break;
             case 'm': Sgr(); break;
             case 'n':
@@ -505,8 +635,14 @@ public sealed class Vt
                 }
                 break;
             case 'c':
-                if (P0(0) == 0) Reply?.Invoke(Encoding.ASCII.GetBytes("\x1b[?1;2c"));
+                if (P0(0) == 0) Reply?.Invoke(Encoding.ASCII.GetBytes("\x1b[?1;2c"));    // a VT100 with the advanced video option
                 break;
+            case 'x':
+                // DECREQTPARM: no parity, 8 bits, 9600 both ways, clock 16x, no flags. 0 asks for a report now and when settings change, 1 only when asked.
+                if (P0(0) <= 1) Reply?.Invoke(Encoding.ASCII.GetBytes($"\x1b[{P0(0) + 2};1;1;112;112;1;0x"));
+                break;
+            case 'q': break;                  // DECLL: the keyboard LEDs; there are none to light
+            case 'y': break;                  // DECTST: self-tests pass by not running
             case 'r':
             {
                 int top = P(0, 1) - 1, bottom = P(1, Rows) - 1;
@@ -526,6 +662,16 @@ public sealed class Vt
         switch (mode)
         {
             case 1: AppCursorKeys = on; break;
+            case 2: if (!on) Vt52 = true; break;                  // DECANM reset: into VT52 mode; ESC < leaves it
+            case 3:                                                // DECCOLM: 80 or 132 columns, the screen cleared
+                ColumnsWanted?.Invoke(on ? 132 : 80);
+                Resize(on ? 132 : 80, Rows);
+                _top = 0; _bottom = Rows - 1;
+                EraseDisplay(2);
+                CursorX = CursorY = 0;
+                break;
+            case 4: case 8: case 9: break;                         // smooth scroll, auto-repeat, interlace: nothing to do
+            case 5: ReverseScreen = on; break;                     // DECSCNM
             case 6: _originMode = on; MoveTo(0, 0); break;
             case 7: _autoWrap = on; break;
             case 25: CursorVisible = on; break;
@@ -597,6 +743,8 @@ public sealed class Vt
                 case 2: _pen.Attr |= CellAttr.Dim; break;
                 case 3: _pen.Attr |= CellAttr.Italic; break;
                 case 4: _pen.Attr |= CellAttr.Underline; break;
+                case 5: case 6: _pen.Attr |= CellAttr.Blink; Blinks = true; break;
+                case 25: _pen.Attr &= ~CellAttr.Blink; break;
                 case 7: _pen.Attr |= CellAttr.Reverse; break;
                 case 8: _pen.Attr |= CellAttr.Hidden; break;
                 case 9: _pen.Attr |= CellAttr.Strike; break;

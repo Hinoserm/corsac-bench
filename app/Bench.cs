@@ -34,10 +34,9 @@ public sealed class BenchConfig
     public float FontSize { get; set; } = 10f;
     public int Cols { get; set; } = 80;
     public int Rows { get; set; } = 25;
-    public bool FitTerminal { get; set; }
     public bool StartWithWindows { get; set; } = true;
     public Dictionary<string, ScreenSettings> Screens { get; set; } = new();
-    public string ScreensLayout { get; set; } = "grid";
+    public List<ScreenWindowConfig> ScreenWindows { get; set; } = new();
 }
 
 public static class Bench
@@ -72,8 +71,12 @@ public static class Bench
         Save();
     }
 
+    /// <summary>Set while the bench shuts down: closing its ports then must not be remembered as the ports being closed.</summary>
+    public static bool Exiting;
+
     public static void Save()
     {
+        if (Exiting) return;
         try
         {
             Directory.CreateDirectory(Dir);
@@ -124,8 +127,8 @@ public static class Bench
             }
             if (name != null) c!.Name = name;
             c!.Seen = DateTime.UtcNow;
-            // Clients that have been silent for a day are gone.
-            foreach (var old in Clients.Values.Where(x => DateTime.UtcNow - x.Seen > TimeSpan.FromDays(1)).ToList())
+            // A client silent for an hour is gone; a bridge that exits says so itself.
+            foreach (var old in Clients.Values.Where(x => x.Doing == "" && DateTime.UtcNow - x.Seen > TimeSpan.FromHours(1)).ToList())
                 Clients.Remove(old.Id);
             if (fresh || name != null) ClientsChanged?.Invoke();
             return c;
