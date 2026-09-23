@@ -1,0 +1,371 @@
+// The bench's state and its tools: the ports, the clients, the capture
+// device, and what each MCP tool does with them. One of these exists per
+// Windows login; every assistant session talks to it over HTTP.
+
+using System.IO.Ports;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace CorsacBench;
+
+/// <summary>One connected assistant session. Keeps its own place in every port's stream.</summary>
+public sealed class Client
+{
+    public readonly string Id;
+    public string Name = "client";
+    public DateTime Seen = DateTime.UtcNow;
+    public string Doing = "";
+    public readonly Dictionary<string, long> Cursors = new();
+
+    public Client(string id) { Id = id; }
+    public string Label => $"{Name} ({Id[..6]})";
+}
+
+public sealed class BenchConfig
+{
+    public string DefaultPort { get; set; } = "COM5";
+    public int Baud { get; set; } = 115200;
+    public string Vga { get; set; } = "00-1 Pro Capture Dual DVI";
+    public int Listen { get; set; } = 7825;
+    public string Python { get; set; } = @"C:\Program Files\Python39\python.exe";
+    public List<string> OpenAtStart { get; set; } = new() { "COM5" };
+    public string Font { get; set; } = "Cascadia Mono";
+    public float FontSize { get; set; } = 10f;
+    public int Cols { get; set; } = 80;
+    public int Rows { get; set; } = 25;
+    public bool FitTerminal { get; set; }
+    public bool StartWithWindows { get; set; } = true;
+    public Dictionary<string, ScreenSettings> Screens { get; set; } = new();
+    public string ScreensLayout { get; set; } = "grid";
+}
+
+public static class Bench
+{
+    public static string Dir = Environment.GetEnvironmentVariable("CORSAC_DIR") ?? @"C:\CORSAC\bench";
+    public static BenchConfig Config = new();
+    static string ConfigPath => Path.Combine(Dir, "bench.json");
+
+    public static readonly byte[] Magic = Encoding.ASCII.GetBytes("\x1b\x1b\x1bRESET");   // os/kernel/drivers/uart8250.cor, MagicByte
+    static readonly byte[] Prompt = Encoding.ASCII.GetBytes("\n# ");
+
+    public static readonly Dictionary<string, Line> Lines = new();
+    public static readonly Dictionary<string, Client> Clients = new();
+    public static string DefaultPort = "COM5";
+    public static string DefaultVga = "";
+
+    public static event Action? LinesChanged;
+    public static event Action? ClientsChanged;
+
+    public static void Load()
+    {
+        try
+        {
+            if (File.Exists(ConfigPath))
+                Config = JsonSerializer.Deserialize<BenchConfig>(File.ReadAllText(ConfigPath)) ?? new();
+        }
+        catch { }
+        if (Environment.GetEnvironmentVariable("CORSAC_COM") is { Length: > 0 } com) Config.DefaultPort = com;
+        if (Environment.GetEnvironmentVariable("CORSAC_VGA") is { Length: > 0 } vga) Config.Vga = vga;
+        DefaultPort = Config.DefaultPort.ToUpperInvariant();
+        DefaultVga = Config.Vga;
+        Save();
+    }
+
+    public static void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            Config.OpenAtStart = Lines.Values.Where(l => l.IsOpen).Select(l => l.Name).DefaultIfEmpty(Config.DefaultPort).ToList();
+            Config.DefaultPort = DefaultPort;
+            Config.Vga = DefaultVga;
+            File.WriteAllText(ConfigPath, JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { }
+    }
+
+    public static void OpenAtStart()
+    {
+        foreach (var name in Config.OpenAtStart.ToList())
+        {
+            var l = Line(name);
+            try { l.Open(new LineSettings { Baud = Config.Baud }, "bench"); }
+            catch (Exception e) { l.Error = "did not open at start: " + e.Message; }
+        }
+    }
+
+    public static Line Line(string? name)
+    {
+        name = string.IsNullOrWhiteSpace(name) ? DefaultPort : name.Trim().ToUpperInvariant();
+        lock (Lines)
+        {
+            if (!Lines.TryGetValue(name, out var l))
+            {
+                l = new Line(name);
+                l.Changed += _ => { Save(); LinesChanged?.Invoke(); };
+                Lines[name] = l;
+                LinesChanged?.Invoke();
+            }
+            return l;
+        }
+    }
+
+    public static Client Client(string? id, string? name = null)
+    {
+        lock (Clients)
+        {
+            id ??= Guid.NewGuid().ToString("N");
+            bool fresh = !Clients.TryGetValue(id, out var c);
+            if (fresh)
+            {
+                c = new Client(id);
+                Clients[id] = c;
+            }
+            if (name != null) c!.Name = name;
+            c!.Seen = DateTime.UtcNow;
+            // Clients that have been silent for a day are gone.
+            foreach (var old in Clients.Values.Where(x => DateTime.UtcNow - x.Seen > TimeSpan.FromDays(1)).ToList())
+                Clients.Remove(old.Id);
+            if (fresh || name != null) ClientsChanged?.Invoke();
+            return c;
+        }
+    }
+
+    public static void Forget(string id)
+    {
+        lock (Clients) Clients.Remove(id);
+        ClientsChanged?.Invoke();
+    }
+
+    /// <summary>A client's place in a port's stream; a client new to the port starts at what arrives next.</summary>
+    static long CursorOf(Client c, Line l)
+    {
+        lock (c.Cursors)
+        {
+            if (!c.Cursors.TryGetValue(l.Name, out var at)) c.Cursors[l.Name] = at = l.End;
+            return at;
+        }
+    }
+
+    static void SetCursor(Client c, Line l, long at)
+    {
+        lock (c.Cursors) c.Cursors[l.Name] = at;
+    }
+
+    public static string Text(byte[] b) => Encoding.Latin1.GetString(b).Replace("\r", "");
+
+    static string? Str(JsonObject a, string k) => a[k] is JsonValue v && v.TryGetValue(out string? s) ? s : a[k]?.ToString();
+    static double Num(JsonObject a, string k, double dflt) => a[k] is JsonValue v && v.TryGetValue(out double d) ? d : double.TryParse(Str(a, k), out d) ? d : dflt;
+    static bool? Bool(JsonObject a, string k) => a[k] is JsonValue v && v.TryGetValue(out bool b) ? b : null;
+
+    static LineSettings SettingsOf(JsonObject a, LineSettings from)
+    {
+        var s = from.Clone();
+        if (a["baud"] != null) s.Baud = (int)Num(a, "baud", s.Baud);
+        if (a["bytesize"] != null) s.ByteSize = (int)Num(a, "bytesize", s.ByteSize);
+        if (Str(a, "parity") is { Length: > 0 } p)
+            s.Parity = char.ToUpperInvariant(p[0]) switch
+            {
+                'N' => Parity.None, 'E' => Parity.Even, 'O' => Parity.Odd, 'M' => Parity.Mark, 'S' => Parity.Space,
+                _ => throw new ArgumentException("parity must be N, E, O, M or S"),
+            };
+        if (a["stopbits"] != null)
+            s.StopBits = Num(a, "stopbits", 1) switch { 1.5 => StopBits.OnePointFive, 2 => StopBits.Two, _ => StopBits.One };
+        if (Bool(a, "rtscts") is bool r) s.RtsCts = r;
+        if (Bool(a, "xonxoff") is bool x) s.XonXoff = x;
+        return s;
+    }
+
+    public static string[] ComPorts() => SerialPort.GetPortNames().Distinct().OrderBy(p => p.Length).ThenBy(p => p).ToArray();
+
+    /// <summary>What each port is, from the registry's device map and the device's friendly name.</summary>
+    public static Dictionary<string, string> PortDescriptions()
+    {
+        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var map = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"HARDWARE\DEVICEMAP\SERIALCOMM");
+            if (map != null)
+                foreach (var n in map.GetValueNames())
+                    if (map.GetValue(n) is string port) d[port] = n.Replace(@"\Device\", "");
+        }
+        catch { }
+        return d;
+    }
+
+    // ---- the tools ----
+
+    static JsonObject Ok(string s) => new() { ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = s }) };
+
+    public static JsonObject Call(Client c, string name, JsonObject a)
+    {
+        c.Doing = name;
+        ClientsChanged?.Invoke();
+        try { return CallCore(c, name, a); }
+        finally { c.Doing = ""; c.Seen = DateTime.UtcNow; ClientsChanged?.Invoke(); }
+    }
+
+    static JsonObject CallCore(Client c, string name, JsonObject a)
+    {
+        string who = c.Label;
+        switch (name)
+        {
+            case "serial_ports":
+            {
+                var desc = PortDescriptions();
+                var rows = ComPorts().Select(p =>
+                {
+                    Line? l; lock (Lines) Lines.TryGetValue(p.ToUpperInvariant(), out l);
+                    return $"{p} | {desc.GetValueOrDefault(p, "")} | {(l != null ? l.Describe() : "not opened here")}{(p.Equals(DefaultPort, StringComparison.OrdinalIgnoreCase) ? " | DEFAULT" : "")}";
+                });
+                return Ok(string.Join("\n", rows).NullIfEmpty() ?? "no COM ports");
+            }
+            case "serial_open":
+            {
+                var l = Line(Str(a, "port"));
+                l.Open(SettingsOf(a, l.Settings), who);
+                if (Bool(a, "default") ?? true) DefaultPort = l.Name;
+                Save();
+                return Ok($"opened {l.Describe()}{(DefaultPort == l.Name ? " (default)" : "")}; every client of the bench shares it");
+            }
+            case "serial_close":
+            {
+                var l = Line(Str(a, "port"));
+                l.Close(who);
+                return Ok($"closed {l.Name} for every client of the bench");
+            }
+            case "serial_configure":
+            {
+                var l = Line(Str(a, "port"));
+                l.Configure(SettingsOf(a, l.Settings), who);
+                return Ok("now " + l.Describe());
+            }
+            case "serial_default":
+                DefaultPort = (Str(a, "port") ?? DefaultPort).ToUpperInvariant();
+                Save();
+                LinesChanged?.Invoke();
+                return Ok("default port is " + DefaultPort + " (for every client of the bench)");
+            case "serial_status":
+            {
+                var l = Line(Str(a, "port"));
+                long at = CursorOf(c, l), end = l.End;
+                string clients;
+                lock (Clients) clients = string.Join(", ", Clients.Values.Select(x => x.Label + (x.Doing != "" ? " [" + x.Doing + "]" : "")));
+                return Ok($"{l.Describe()} received={end} unread={end - at} error={l.Error} log={l.LogPath}" +
+                          $"{(DefaultPort == l.Name ? " (default)" : "")}{(l.OpenedBy != "" ? " opened-by=" + l.OpenedBy : "")}" +
+                          $"{(l.ConversationHolder != "" ? " command-running-for=" + l.ConversationHolder : "")}\nclients: {clients}");
+            }
+            case "serial_read":
+            {
+                var l = Line(Str(a, "port"));
+                Thread.Sleep(TimeSpan.FromSeconds(Num(a, "seconds", 1)));
+                long at = CursorOf(c, l);
+                var got = l.Take(ref at);
+                SetCursor(c, l, at);
+                return Ok(Text(got));
+            }
+            case "serial_send":
+            {
+                var l = Line(Str(a, "port"));
+                var data = Encoding.Latin1.GetBytes((Str(a, "text") ?? "") + ((Bool(a, "newline") ?? true) ? "\n" : ""));
+                l.Send(data, who);
+                return Ok($"sent {data.Length} bytes on {l.Name}");
+            }
+            case "serial_wait":
+            {
+                var l = Line(Str(a, "port"));
+                var needle = Str(a, "text") ?? throw new ArgumentException("text is required");
+                long at = CursorOf(c, l);
+                var (found, got) = l.Wait(ref at, Encoding.Latin1.GetBytes(needle), TimeSpan.FromSeconds(Num(a, "seconds", 60)));
+                SetCursor(c, l, at);
+                return Ok(Text(got) + (found ? "" : $"\n[timed out waiting for \"{needle}\"]"));
+            }
+            case "serial_command":
+                return Converse(c, a, Num(a, "seconds", 120), l =>
+                {
+                    long at = l.End;
+                    l.Send(Encoding.Latin1.GetBytes((Str(a, "command") ?? "") + "\n"), who);
+                    var (found, got) = l.Wait(ref at, Prompt, TimeSpan.FromSeconds(Num(a, "seconds", 120)));
+                    SetCursor(c, l, at);
+                    return Text(got) + (found ? "" : "\n[no prompt came back within the time]");
+                });
+            case "serial_login":
+                return Converse(c, a, Num(a, "seconds", 180), l =>
+                {
+                    long at = CursorOf(c, l);
+                    var (found, got) = l.Wait(ref at, Encoding.ASCII.GetBytes("login:"), TimeSpan.FromSeconds(Num(a, "seconds", 180)));
+                    if (!found) { SetCursor(c, l, at); return Text(got) + "\n[no login prompt within the time]"; }
+                    Thread.Sleep(500);
+                    l.Send(Encoding.Latin1.GetBytes((Str(a, "user") ?? "root") + "\n"), who);
+                    var (found2, got2) = l.Wait(ref at, Encoding.ASCII.GetBytes("# "), TimeSpan.FromSeconds(90));
+                    SetCursor(c, l, at);
+                    return Text(got.Concat(got2).ToArray()) + (found2 ? "" : "\n[no shell prompt after logging in]");
+                });
+            case "serial_reset":
+                return Converse(c, a, 30, l =>
+                {
+                    long at = l.End;
+                    l.Send(Magic, who);
+                    var (found, got) = l.Wait(ref at, Encoding.ASCII.GetBytes("CORSAC boot"), TimeSpan.FromSeconds(Num(a, "seconds", 30)));
+                    SetCursor(c, l, at);
+                    return (found ? "machine reset; loader is up\n" : "no loader banner seen after the reset sequence\n") + Text(got);
+                });
+            case "serial_tail":
+                return Ok(Text(Line(Str(a, "port")).Tail((int)Num(a, "chars", 4000))));
+            case "serial_screen":
+            {
+                var l = Line(Str(a, "port"));
+                var sb = new StringBuilder();
+                lock (l.Term)
+                {
+                    int from = Math.Max(0, l.Term.Scrollback.Count - (int)Num(a, "history", 0));
+                    for (int i = from; i < l.Term.TotalLines; i++) sb.Append(l.Term.LineText(i)).Append('\n');
+                    sb.Append($"[{l.Name} terminal {l.Term.Cols}x{l.Term.Rows}, cursor at row {l.Term.CursorY + 1} column {l.Term.CursorX + 1}{(l.Term.AltScreen ? ", full-screen program" : "")}]");
+                }
+                return Ok(sb.ToString());
+            }
+            case "bench_clients":
+            {
+                lock (Clients)
+                    return Ok(string.Join("\n", Clients.Values.OrderBy(x => x.Seen).Select(x =>
+                        $"{x.Label}{(x.Id == c.Id ? " (you)" : "")} last seen {(DateTime.UtcNow - x.Seen).TotalSeconds:0}s ago{(x.Doing != "" ? " doing " + x.Doing : "")}")));
+            }
+            case "vga_devices":
+                return Ok(string.Join("\n", Vga.Devices().Select((d, i) => $"{i}: {d}{(d.Contains(DefaultVga, StringComparison.OrdinalIgnoreCase) ? "  (default)" : "")}")));
+            case "vga_select":
+                DefaultVga = Vga.Resolve(Str(a, "device") ?? throw new ArgumentException("device is required"));
+                Save();
+                return Ok("default capture device is " + DefaultVga);
+            case "vga_capture":
+            {
+                var device = Vga.Resolve(Str(a, "device"));
+                using var f = Vga.Frame(device, 0);
+                var path = Path.Combine(Dir, "vga.png");
+                using var ms = new MemoryStream();
+                f.Picture.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                File.WriteAllBytes(path, ms.ToArray());
+                return new JsonObject
+                {
+                    ["content"] = new JsonArray(
+                        new JsonObject { ["type"] = "text", ["text"] = $"{device}, {f.Picture.Width}x{f.Picture.Height} (signal {f.NativeW}x{f.NativeH}), saved to {path}" },
+                        new JsonObject { ["type"] = "image", ["data"] = Convert.ToBase64String(ms.ToArray()), ["mimeType"] = "image/png" }),
+                };
+            }
+        }
+        throw new ArgumentException("unknown tool " + name);
+    }
+
+    /// <summary>Runs a send-and-wait exchange with the port to itself, so another client's command cannot land in the middle.</summary>
+    static JsonObject Converse(Client c, JsonObject a, double seconds, Func<Line, string> body)
+    {
+        var l = Line(Str(a, "port"));
+        if (!l.Conversation.Wait(TimeSpan.FromSeconds(Math.Max(seconds, 1))))
+            return Ok($"[{l.Name} is busy: {l.ConversationHolder} is running a command on it]");
+        l.ConversationHolder = c.Label;
+        try { return Ok(body(l)); }
+        finally { l.ConversationHolder = ""; l.Conversation.Release(); }
+    }
+
+    static string? NullIfEmpty(this string s) => s.Length == 0 ? null : s;
+}
