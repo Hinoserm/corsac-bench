@@ -42,11 +42,11 @@ public sealed class TerminalForm : Form
         Controls.Add(_status);
 
         _port.DropDown += (_, _) => FillPorts();
-        _port.SelectedIndexChanged += (_, _) => { if (_port.SelectedItem is PortItem p) ShowLine(Bench.Line(p.Name)); };
+        _port.SelectedIndexChanged += (_, _) => { if (!_filling && _port.SelectedItem is PortItem p) ShowLine(Bench.Line(p.Name)); };
         _open.Click += (_, _) => ToggleOpen();
         _settings.DropDownOpening += (_, _) => BuildSettings();
         _size.DropDownOpening += (_, _) => BuildSize();
-        _tabs.SelectedIndexChanged += (_, _) => { UpdateStatus(); Current?.Focus(); };
+        _tabs.SelectedIndexChanged += (_, _) => { FillPorts(); UpdateStatus(); Current?.Focus(); };
         _tick.Tick += (_, _) => UpdateStatus();
         _tick.Start();
         Bench.LinesChanged += () => { if (IsHandleCreated) BeginInvoke(SyncTabs); };
@@ -64,7 +64,19 @@ public sealed class TerminalForm : Form
 
     TermView? Current => _tabs.SelectedTab?.Controls.OfType<TermView>().FirstOrDefault();
 
+    bool _filling;
+
+    /// The port list, rebuilt: its text says which are open, so it is redone
+    /// whenever a port opens or closes and whenever the tab changes, not only
+    /// when the list is dropped down.
     void FillPorts()
+    {
+        _filling = true;
+        try { FillPortsCore(); }
+        finally { _filling = false; }
+    }
+
+    void FillPortsCore()
     {
         var desc = Bench.PortDescriptions();
         var names = Bench.ComPorts().Concat(Bench.Lines.Keys).Distinct(StringComparer.OrdinalIgnoreCase);
@@ -91,6 +103,7 @@ public sealed class TerminalForm : Form
             }
         foreach (TabPage p in _tabs.TabPages)
             p.Text = p.Name + (Bench.Lines.TryGetValue(p.Name, out var l) && l.IsOpen ? "" : " (closed)");
+        FillPorts();
         UpdateStatus();
     }
 

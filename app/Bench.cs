@@ -80,7 +80,11 @@ public static class Bench
         try
         {
             Directory.CreateDirectory(Dir);
-            Config.OpenAtStart = Lines.Values.Where(l => l.IsOpen).Select(l => l.Name).DefaultIfEmpty(Config.DefaultPort).ToList();
+            // The ports open now are the ones opened at the next start -- none, if
+            // they were all closed. Before the start has opened them, the list
+            // read from the file stands.
+            if (_started)
+                lock (Lines) Config.OpenAtStart = Lines.Values.Where(l => l.IsOpen).Select(l => l.Name).ToList();
             Config.DefaultPort = DefaultPort;
             Config.Vga = DefaultVga;
             File.WriteAllText(ConfigPath, JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true }));
@@ -88,8 +92,11 @@ public static class Bench
         catch { }
     }
 
+    static bool _started;
+
     public static void OpenAtStart()
     {
+        _started = true;
         foreach (var name in Config.OpenAtStart.ToList())
         {
             var l = Line(name);
