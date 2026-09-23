@@ -160,7 +160,19 @@ public sealed class Vt
     {
         if (cols < 2 || rows < 2 || (cols == Cols && rows == Rows)) return;
         bool alt = AltScreen;
-        _main = Refit(_main, cols, rows, !alt, true);
+        if (cols != Cols)
+        {
+            // A NEW WIDTH RE-WRAPS THE TEXT, as a modern terminal does: the
+            // main screen and its scrollback are put back into the lines
+            // they were written as and wrapped again at the new width, the
+            // cursor staying on its character. The alternate screen belongs
+            // to a full-screen program, which draws it again itself.
+            Reflow(cols, rows, !alt);
+        }
+        else
+        {
+            _main = Refit(_main, cols, rows, !alt, true);
+        }
         _alt = Refit(_alt, cols, rows, alt, false);
         _screen = alt ? _alt : _main;
         Cols = cols; Rows = rows;
@@ -170,6 +182,102 @@ public sealed class Vt
         _pendingWrap = false;
         ResetTabs();
         Version++;
+    }
+
+    // ---- reflow -------------------------------------------------------------
+
+    /// Rows that ran on into the next one because the text reached the right
+    /// edge, rather than ending with a newline. Kept by the row, as its size
+    /// is, so scrolling carries the mark with it.
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<Cell[], object> _wrapped = new();
+    static readonly object WrapMark = new();
+
+    bool Wrapped(Cell[] row) => _wrapped.TryGetValue(row, out _);
+
+    void SetWrapped(Cell[] row, bool on)
+    {
+        _wrapped.Remove(row);
+        if (on) _wrapped.Add(row, WrapMark);
+    }
+
+    /// How much of a row has anything in it: trailing spaces with nothing
+    /// drawn behind them are not text.
+    static int Used(Cell[] row)
+    {
+        int n = row.Length;
+        while (n > 0)
+        {
+            var c = row[n - 1];
+            if ((c.Ch != ' ' && c.Ch != 0) || c.Bg != -1 || (c.Attr & (CellAttr.Reverse | CellAttr.Underline | CellAttr.Strike)) != 0) break;
+            n--;
+        }
+        return n;
+    }
+
+    /// The main screen and scrollback rewrapped at `cols`. `active` says the
+    /// main screen is the one shown, so its cursor is the live one; under a
+    /// full-screen program it is the one saved when that program took over.
+    void Reflow(int cols, int rows, bool active)
+    {
+        int cx = active ? CursorX : _saved.X, cy = active ? CursorY : _saved.Y;
+        var all = new List<Cell[]>(Scrollback.Count + _main.Length);
+        all.AddRange(Scrollback);
+        all.AddRange(_main);
+        int cursorRow = Scrollback.Count + Math.Min(cy, _main.Length - 1);
+
+        // Blank rows under the cursor are room, not text.
+        int last = all.Count - 1;
+        while (last > cursorRow && Used(all[last]) == 0 && !Wrapped(all[last - 1])) last--;
+
+        // Back into the lines they were written as.
+        var lines = new List<List<Cell>>();
+        var line = new List<Cell>();
+        int cursorLine = 0, cursorAt = 0;
+        for (int i = 0; i <= last; i++)
+        {
+            var r = all[i];
+            if (i == cursorRow) { cursorLine = lines.Count; cursorAt = line.Count + cx; }
+            bool runsOn = Wrapped(r) && i < last;
+            int take = runsOn ? r.Length : Used(r);
+            for (int k = 0; k < take; k++) line.Add(r[k]);
+            if (!runsOn) { lines.Add(line); line = new List<Cell>(); }
+        }
+
+        // And wrapped again.
+        var rowsOut = new List<Cell[]>();
+        int newRow = 0, newX = 0;
+        for (int li = 0; li < lines.Count; li++)
+        {
+            var l = lines[li];
+            int length = li == cursorLine ? Math.Max(l.Count, cursorAt + 1) : l.Count;
+            int pieces = Math.Max(1, (length + cols - 1) / cols);
+            int first = rowsOut.Count;
+            for (int k = 0; k < pieces; k++)
+            {
+                var row = NewRow(cols);
+                for (int x = 0; x < cols; x++)
+                {
+                    int at = k * cols + x;
+                    if (at < l.Count) row[x] = l[at];
+                }
+                if (k < pieces - 1) SetWrapped(row, true);
+                rowsOut.Add(row);
+            }
+            if (li == cursorLine) { newRow = first + cursorAt / cols; newX = cursorAt % cols; }
+        }
+
+        // The bottom of it is the screen, with the cursor on it.
+        int start = Math.Max(0, rowsOut.Count - rows);
+        if (newRow < start) start = newRow;
+        if (newRow - start >= rows) start = newRow - rows + 1;
+        Scrollback.Clear();
+        Scrollback.AddRange(rowsOut.GetRange(0, start));
+        if (Scrollback.Count > ScrollbackLimit) Scrollback.RemoveRange(0, Scrollback.Count - ScrollbackLimit);
+        var screen = new Cell[rows][];
+        for (int y = 0; y < rows; y++) screen[y] = start + y < rowsOut.Count ? rowsOut[start + y] : NewRow(cols);
+        _main = screen;
+        if (active) { CursorX = newX; CursorY = newRow - start; }
+        else { _saved.X = newX; _saved.Y = newRow - start; }
     }
 
     /// <summary>The cursor's screen keeps the cursor's line by dropping lines from the top; the main screen's go to the scrollback.</summary>
@@ -400,6 +508,8 @@ public sealed class Vt
         int cols = LineCols;
         if (_pendingWrap && _autoWrap)
         {
+            // This row runs on into the next: one line, as far as reflow is concerned.
+            SetWrapped(_screen[CursorY], true);
             CursorX = 0;
             LineFeed();
         }
