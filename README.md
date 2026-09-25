@@ -179,8 +179,5 @@ same folder. Most settings are set from the windows. The rest:
 MIT; see [LICENSE](LICENSE).
 
 The MIT license covers this project's own code only. We claim no ownership
-of the Magewell components included in
-`third_party/magewell-capture-sdk-3.3.1.1596` (the Magewell Capture SDK's
-headers, libraries, documents and examples), nor of `LibMWCapture.dll`,
-which the Magewell driver installs. They belong to Magewell and remain under
-Magewell's own terms.
+of the included Magewell components. They belong to Magewell and remain
+under Magewell's own terms.
