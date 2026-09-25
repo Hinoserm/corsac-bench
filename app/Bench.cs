@@ -339,6 +339,7 @@ public static class Bench
                 long start = l.Start, end = l.End;
                 long from = a["from"] == null ? end - bytes : (long)Num(a, "from", 0);
                 if (from < 0) from = end + from;
+                long asked = from;
                 from = Math.Clamp(from, start, end);
                 long to = Math.Min(end, from + bytes);
                 var page = l.Read(from, to);
@@ -346,7 +347,8 @@ public static class Bench
                 var head = $"[{l.Name}: bytes {from} to {to} of {start} to {end} held (keeps the newest {l.Capacity >> 20} MiB)" +
                            (to > from ? $"; arrived {When(from)} to {When(to - 1)}" : "") +
                            (from > start ? $"; earlier page: from={Math.Max(start, from - bytes)}" : "; this is the oldest held") +
-                           (to < end ? $"; later page: from={to}" : "; this is the newest") + "]\n";
+                           (to < end ? $"; later page: from={to}" : "; this is the newest") + "]\n" +
+                           (asked < start ? $"[bytes {Math.Max(0, asked)} to {start} are no longer held: the oldest went when the history passed {l.Capacity >> 20} MiB]\n" : "");
                 return Ok(head + Text(page));
             }
             case "serial_find":
