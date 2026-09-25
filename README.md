@@ -70,6 +70,8 @@ works through DirectShow. See [Magewell Pro Capture cards](#magewell-pro-capture
     default), or resize the window to the new picture
   - black-border trimming, frame rate, smoothing
 - `vga_capture` gives a session one frame as a PNG.
+- `vga_capture_series` gives a session a whole span of time in one image,
+  for example 4 frames over a minute to time a boot.
 
 ### Magewell Pro Capture cards
 
@@ -165,6 +167,7 @@ directly. `http://127.0.0.1:7825/status` is a plain-text summary.
 | `serial_record_start` / `_stop` / `_list` | record ports to files |
 | `bench_clients` | the connected sessions and what each is doing |
 | `vga_devices` / `vga_select` / `vga_capture` | the capture devices, and a frame from one |
+| `vga_capture_series` | frames taken evenly over a span of time, in one image in time order, each timed beneath; several can run at once alongside every other tool |
 
 ## Settings
 
