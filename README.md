@@ -69,7 +69,7 @@ screen, captured through a Magewell Pro Capture card.*
   that report the input resolution as their first format, such as Magewell
   Pro Capture.
 - Each device has settings for when the video mode changes:
-  - monitor 4:3, square pixels, or stretch
+  - square pixels as captured (the default), monitor 4:3, or stretch
   - fit, whole multiples, or actual size
   - keep the window's size and place and rescale the picture inside it (the
     default), or resize the window to the new picture

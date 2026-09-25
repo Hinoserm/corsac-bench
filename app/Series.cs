@@ -106,10 +106,8 @@ public static class Series
         return shots;
     }
 
-    /// The shape a frame is seen at: the old modes of 480 lines and fewer
-    /// fill a 4:3 monitor (720x400 text is drawn tall, as a CRT shows it);
-    /// anything larger has square pixels.
-    static double Shape(Bitmap b) => b.Height <= 480 ? 4.0 / 3 : (double)b.Width / b.Height;
+    /// The shape a frame is seen at: square pixels, as captured.
+    static double Shape(Bitmap b) => (double)b.Width / b.Height;
 
     static Bitmap Lay(List<Shot> shots)
     {

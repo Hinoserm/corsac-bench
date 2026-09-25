@@ -11,10 +11,10 @@ namespace CorsacBench;
 
 public enum ScreenAspect
 {
+    /// <summary>One captured pixel is one square pixel: the picture is the shape of what arrives.</summary>
+    Pixels,
     /// <summary>Every mode fills a 4:3 picture, as a CRT shows it: 720x400 text is stretched tall.</summary>
     Monitor,
-    /// <summary>One captured pixel is one square pixel.</summary>
-    Pixels,
     /// <summary>Fills the view whatever its shape.</summary>
     Stretch,
 }
@@ -42,7 +42,7 @@ public sealed class ScreenSettings
     /// <summary>0 x 0 follows the signal coming in; anything else is a fixed capture size.</summary>
     public int CaptureW { get; set; }
     public int CaptureH { get; set; }
-    public ScreenAspect Aspect { get; set; } = ScreenAspect.Monitor;
+    public ScreenAspect Aspect { get; set; } = ScreenAspect.Pixels;
     public ScreenScale Scale { get; set; } = ScreenScale.Fit;
     public bool Smooth { get; set; } = true;
     public bool TrimBorders { get; set; }
@@ -467,8 +467,8 @@ public sealed class ScreenView : Control
 
         m.Items.Add(Sub("Capture size", sizes.ToArray()));
         m.Items.Add(Sub("Shape",
+            Item("Square pixels (as captured)", S.Aspect == ScreenAspect.Pixels, () => S.Aspect = ScreenAspect.Pixels),
             Item("Like a monitor (every mode 4:3)", S.Aspect == ScreenAspect.Monitor, () => S.Aspect = ScreenAspect.Monitor),
-            Item("Square pixels", S.Aspect == ScreenAspect.Pixels, () => S.Aspect = ScreenAspect.Pixels),
             Item("Stretch to the window", S.Aspect == ScreenAspect.Stretch, () => S.Aspect = ScreenAspect.Stretch)));
         m.Items.Add(Sub("Scale",
             Item("Fit the window", S.Scale == ScreenScale.Fit, () => S.Scale = ScreenScale.Fit),
