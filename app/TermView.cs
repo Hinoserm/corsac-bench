@@ -84,6 +84,17 @@ public sealed class TermView : Control
 
     public Size CellSize => _cell;
 
+    /// What the window's status bar should say about this terminal beyond the
+    /// port's state. Never drawn over the text: nothing covers the screen.
+    public string Note
+    {
+        get
+        {
+            lock (Line.Term)
+                return Line.Term.KeyboardLocked ? "keyboard locked by the machine" : Line.Term.Vt52 ? "VT52 mode" : "";
+        }
+    }
+
     /// <summary>The client size that shows the terminal's whole screen.</summary>
     public Size WantedSize(int cols, int rows) => new(cols * _cell.Width + _bar.Width + 4, rows * _cell.Height + 4);
 
@@ -203,15 +214,6 @@ public sealed class TermView : Control
                     using var p = new Pen(_reverse ? Color.FromArgb(60, 60, 60) : Color.FromArgb(200, 200, 200));
                     g.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
                 }
-            }
-            string? note = !Line.IsOpen ? $"{Line.Name} is closed" : vt.KeyboardLocked ? "keyboard locked by the machine" : vt.Vt52 ? "VT52 mode" : null;
-            if (note != null)
-            {
-                var size = TextRenderer.MeasureText(note, _bold);
-                var at = new Point(ClientSize.Width - _bar.Width - size.Width - 12, 6);
-                using var b = new SolidBrush(Color.FromArgb(160, 90, 0, 0));
-                g.FillRectangle(b, at.X - 6, at.Y - 3, size.Width + 12, size.Height + 6);
-                TextRenderer.DrawText(g, note, _bold, at, Color.White);
             }
         }
     }

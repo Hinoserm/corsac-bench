@@ -382,7 +382,8 @@ public sealed class TerminalForm : Form
             _state.Text = $"{l.Describe()}   {l.End:N0} bytes received" +
                           (l.OpenedBy != "" ? $"   opened by {l.OpenedBy}" : "") +
                           (l.ConversationHolder != "" ? $"   running a command for {l.ConversationHolder}" : "") +
-                          (l.Error != "" ? "   " + l.Error : "");
+                          (l.Error != "" ? "   " + l.Error : "") +
+                          (Current!.Note != "" ? "   " + Current.Note : "");
             List<Recording> here;
             lock (Recordings.Active) here = Recordings.Active.Where(r => r.C.Ports.Contains(l.Name)).ToList();
             _rec.Text = here.Count == 0 ? "" : here.Count == 1 ? "● REC" : $"● REC x{here.Count}";

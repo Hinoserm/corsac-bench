@@ -213,31 +213,53 @@ public sealed class ScreenView : Control
         Rectangle src;
         lock (_gate) src = _frame == null ? new Rectangle(0, 0, 720, 400) : _trim;
         var shape = Shape(src);
-        room = new Size(room.Width - 40, room.Height - 120);
+        int bar = BarHeight;
+        room = new Size(room.Width - 40, room.Height - 120 - bar);
+        Size picture;
         switch (S.Scale)
         {
             case ScreenScale.Actual:
-                return shape;
+                picture = shape;
+                break;
             case ScreenScale.Whole:
             {
                 int k = Math.Max(1, Math.Min(room.Width / shape.Width, room.Height / shape.Height));
-                return new Size(shape.Width * k, shape.Height * k);
+                picture = new Size(shape.Width * k, shape.Height * k);
+                break;
             }
             default:
             {
-                // Keep the view's present height where it fits; the width follows the shape.
-                int hgt = Math.Min(Math.Max(Height, 240), room.Height);
+                // Keep the picture's present height where it fits; the width follows the shape.
+                int hgt = Math.Min(Math.Max(PictureArea.Height, 240), room.Height);
                 int wid = (int)Math.Round((double)hgt * shape.Width / shape.Height);
                 if (wid > room.Width) { wid = room.Width; hgt = (int)Math.Round((double)wid * shape.Height / shape.Width); }
-                return new Size(wid, hgt);
+                picture = new Size(wid, hgt);
+                break;
             }
         }
+        // And the bar under it, so a window sized to the picture still shows all of it.
+        return new Size(picture.Width, picture.Height + bar);
     }
+
+    // THE PICTURE AND ITS INFORMATION NEVER SHARE A PIXEL. The information is
+    // a bar of its own under the picture; the picture is placed in what is
+    // left. Nothing is ever drawn over the machine's screen.
+
+    static Font BarFont => SystemFonts.StatusFont ?? SystemFonts.DefaultFont;
+
+    /// Whether the bar is shown: when asked for, or when there is something
+    /// the person must see (an error, or no picture yet).
+    bool BarShown => S.ShowInfo || _error != "" || _frame == null;
+
+    int BarHeight => BarShown ? TextRenderer.MeasureText("Ag", BarFont).Height + 6 : 0;
+
+    /// Where the picture may go: the view less the bar.
+    Rectangle PictureArea => new(0, 0, ClientSize.Width, Math.Max(1, ClientSize.Height - BarHeight));
 
     Rectangle Placement(Rectangle src)
     {
         var shape = Shape(src);
-        var room = ClientRectangle;
+        var room = PictureArea;
         if (S.Aspect == ScreenAspect.Stretch) return room;
         double k = S.Scale switch
         {
@@ -270,15 +292,16 @@ public sealed class ScreenView : Control
             }
             else info = $"{Short(Device)}  waiting for a picture";
         }
-        if (_error != "") info += "\n" + _error;
-        if (S.ShowInfo || _error != "" || _frame == null)
+        if (_changes.Count > 0 && S.ShowInfo) info += "   last change " + _changes[^1];
+        if (_error != "") info += "   " + _error;
+        if (BarShown)
         {
-            if (_changes.Count > 0 && S.ShowInfo) info += "\nlast change " + _changes[^1];
-            var font = SystemFonts.StatusFont ?? SystemFonts.DefaultFont;
-            var size = TextRenderer.MeasureText(info, font);
-            using var b = new SolidBrush(Color.FromArgb(150, 0, 0, 0));
-            g.FillRectangle(b, 4, 4, size.Width + 8, size.Height + 6);
-            TextRenderer.DrawText(g, info, font, new Point(8, 7), _error != "" ? Color.Orange : Color.White);
+            var bar = new Rectangle(0, PictureArea.Bottom, ClientSize.Width, ClientSize.Height - PictureArea.Bottom);
+            using var b = new SolidBrush(Color.FromArgb(32, 32, 36));
+            g.FillRectangle(b, bar);
+            TextRenderer.DrawText(g, info, BarFont, new Rectangle(bar.X + 6, bar.Y, bar.Width - 12, bar.Height),
+                _error != "" ? Color.Orange : Color.Gainsboro,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
     }
 
