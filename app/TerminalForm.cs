@@ -26,14 +26,14 @@ public sealed class TerminalForm : Form
     public static readonly List<TerminalForm> Open = new();
 
     public readonly TerminalWindowConfig W;
-    readonly ToolStrip _bar = new() { GripStyle = ToolStripGripStyle.Hidden };
+    readonly ToolStrip _bar = new ClickThroughStrip { GripStyle = ToolStripGripStyle.Hidden };
     readonly ToolStripComboBox _port = new() { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 260 };
     readonly ToolStripButton _open = new("Open");
     readonly ToolStripDropDownButton _settings = new("Settings");
     readonly ToolStripDropDownButton _record = new("Record");
     readonly ToolStripDropDownButton _size = new("Size");
     readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
-    readonly StatusStrip _status = new();
+    readonly StatusStrip _status = new ClickThroughStatusStrip();
     readonly ToolStripStatusLabel _rec = new() { ForeColor = Color.Firebrick };
     readonly ToolStripStatusLabel _state = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly ToolStripStatusLabel _clients = new();

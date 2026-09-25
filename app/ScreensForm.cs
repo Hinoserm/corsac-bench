@@ -14,7 +14,7 @@ public sealed class ScreensForm : Form
     public static readonly List<ScreensForm> Open = new();
 
     public readonly ScreenWindowConfig W;
-    readonly ToolStrip _bar = new() { GripStyle = ToolStripGripStyle.Hidden };
+    readonly ToolStrip _bar = new ClickThroughStrip { GripStyle = ToolStripGripStyle.Hidden };
     readonly ToolStripDropDownButton _devices = new("Devices");
     readonly ToolStripDropDownButton _layout = new("Layout");
     readonly TableLayoutPanel _grid = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(24, 24, 24), Margin = Padding.Empty };
@@ -25,11 +25,11 @@ public sealed class ScreensForm : Form
     ScreenView? _chosen;
     // THE BUTTON BAR, under the menu: the common actions, on the picture last
     // clicked (or the only one shown).
-    readonly ToolStrip _tools = new() { GripStyle = ToolStripGripStyle.Hidden };
-    readonly ToolStripButton _shot = Button("Screenshot", '\uE722', "Copy the picture to the clipboard, at the resolution it arrives");
-    readonly ToolStripButton _save = Button("Save picture", '\uE74E', "Save the picture as a PNG, at the resolution it arrives");
-    readonly ToolStripButton _pause = Button("Pause", '\uE769', "Hold the picture still");
-    readonly ToolStripButton _full = Button("Full screen", '\uE740', "The whole monitor for the pictures (F11; Esc or F11 to leave)");
+    readonly ToolStrip _tools = new ClickThroughStrip { GripStyle = ToolStripGripStyle.Hidden };
+    readonly ToolStripButton _save = Button("Save picture: as a PNG, at the resolution it arrives");
+    readonly ToolStripButton _pause = Button("Pause: hold the picture still");
+    readonly ToolStripButton _full = Button("Full screen: the whole monitor for the pictures (F11; Esc or F11 to leave)");
+    readonly ToolStripButton _shot = Button("Screenshot: copy the picture to the clipboard, at the resolution it arrives");
     FormWindowState _wasState;
     Rectangle _wasBounds;
     bool _isFull;
@@ -103,7 +103,9 @@ public sealed class ScreensForm : Form
         _bar.Items.Add(_layout);
         _bar.Items.Add(new ToolStripButton("New window", null, (_, _) => NewWindow(Location)));
         _bar.Items.Add(_hint);
-        _tools.Items.AddRange(new ToolStripItem[] { _shot, _save, new ToolStripSeparator(), _pause, _full });
+        _tools.Items.AddRange(new ToolStripItem[] { _save, _pause, _full, _shot });
+        Icons();
+        DpiChanged += (_, _) => Icons();
         _shot.Click += (_, _) => Copy(Target());
         _save.Click += (_, _) => Target()?.SaveAs();
         _pause.Click += (_, _) => { if (Target() is { } v) v.Paused = !v.Paused; };
@@ -187,14 +189,33 @@ public sealed class ScreensForm : Form
     void ShowState()
     {
         bool paused = Target()?.Paused == true;
-        _pause.Text = paused ? "Resume" : "Pause";
-        _pause.Image = Glyph(paused ? '\uE768' : '\uE769');
+        if (_pause.Checked == paused && _pause.Image != null) return;
         _pause.Checked = paused;
-        _pause.ToolTipText = paused ? "Let the picture move again" : "Hold the picture still";
+        _pause.ToolTipText = paused ? "Resume: let the picture move again" : "Pause: hold the picture still";
+        Set(_pause, paused ? WinIcon.Play : WinIcon.Stop);
     }
 
-    static ToolStripButton Button(string text, char symbol, string tip) =>
-        new(text, Glyph(symbol)) { DisplayStyle = ToolStripItemDisplayStyle.ImageAndText, ToolTipText = tip };
+    static ToolStripButton Button(string tip) =>
+        new() { DisplayStyle = ToolStripItemDisplayStyle.Image, ImageScaling = ToolStripItemImageScaling.None, ToolTipText = tip, AutoToolTip = false };
+
+    /// <summary>Windows' own icons, drawn for this monitor's DPI.</summary>
+    void Icons()
+    {
+        Set(_save, WinIcon.Save);
+        Set(_full, WinIcon.Monitor);
+        Set(_shot, WinIcon.Camera);
+        Set(_pause, Target()?.Paused == true ? WinIcon.Play : WinIcon.Stop);
+    }
+
+    void Set(ToolStripButton b, WinIcon icon)
+    {
+        var old = b.Image;
+        b.Image = icon.Load(LogicalToDeviceUnits(16));
+        old?.Dispose();
+        // Without its icon (a Windows lacking it) the button still says what it is.
+        b.DisplayStyle = b.Image != null ? ToolStripItemDisplayStyle.Image : ToolStripItemDisplayStyle.Text;
+        b.Text = (b.ToolTipText ?? "").Split(':')[0];
+    }
 
     /// <summary>The pictures on the whole monitor, without the window's frame or bars.</summary>
     void FullScreen(bool on)
@@ -227,21 +248,6 @@ public sealed class ScreensForm : Form
     }
 
     List<ScreenView> Showing() => _solo != null ? new List<ScreenView> { _solo } : _views;
-
-    /// <summary>A Windows symbol (Segoe MDL2 Assets, in every Windows 10 and 11) as a menu image.</summary>
-    static Bitmap Glyph(char symbol)
-    {
-        // Drawn large; the tool strip scales it to its image size for the monitor's DPI.
-        const int size = 32;
-        var b = new Bitmap(size, size);
-        using var g = Graphics.FromImage(b);
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-        using var font = new Font("Segoe MDL2 Assets", size * 0.75f, GraphicsUnit.Pixel);
-        using var ink = new SolidBrush(SystemColors.ControlText);
-        using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        g.DrawString(symbol.ToString(), font, ink, new RectangleF(0, 0, size, size), centre);
-        return b;
-    }
 
     /// <summary>The picture, as captured, onto the clipboard; the bar says so.</summary>
     void Copy(ScreenView? v)
