@@ -427,6 +427,17 @@ public static class Bench
                 DefaultVga = Vga.Resolve(Str(a, "device") ?? throw new ArgumentException("device is required"));
                 Save();
                 return Ok("default capture device is " + DefaultVga);
+            case "vga_capture_series":
+            {
+                var device = Vga.Resolve(Str(a, "device"));
+                int count = (int)Math.Clamp(Num(a, "count", 8), 1, 64);
+                double seconds = Math.Clamp(Num(a, "seconds", 10), 0, 3600);
+                c.Doing = $"capturing {count} frames over {seconds:0.#} s";
+                // Runs on this call's own thread and holds no lock while it
+                // waits, so series run side by side with each other and every tool.
+                try { return Series.Capture(device, count, seconds, Series.NewPath(Dir)); }
+                finally { c.Doing = ""; }
+            }
             case "vga_capture":
             {
                 var device = Vga.Resolve(Str(a, "device"));

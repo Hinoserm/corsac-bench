@@ -92,7 +92,9 @@ public static class Mcp
         Tool("vga_devices", "List the capture devices by index and name, marking the default.", Schema(new())),
         Tool("vga_select", "Make a capture device (by index or a part of its name) the default for vga_capture.", Schema(Obj(("device", T("string"))), "device")),
         Tool("vga_capture", "Grab one frame of the machine's VGA output as a PNG image (also saved as vga.png in the bench folder), at the resolution of the signal coming in. `device` is an index or a part of the device name; the default device unless given.",
-            Schema(Obj(("device", T("string")))))
+            Schema(Obj(("device", T("string"))))),
+        Tool("vga_capture_series", "Watch the screen change over time: `count` frames taken evenly over `seconds` (the first at once, the last at the end), returned as ONE image with the frames in order left to right, top to bottom, each with its time since the start and wall-clock time in a strip beneath it. The image is as large as a session is shown (2000 px on its longest side), so single frames may be too small to read; it is for seeing what changed and when (a boot's progress, a mode change, a hang). E.g. count 4 over 60 seconds to time a Windows boot. Also saved under series\\ in the bench folder. The call takes `seconds` to answer but blocks nothing else: several series and any other tools can run at the same time.",
+            Schema(Obj(("device", T("string")), ("count", T("integer", "frames, 1 to 64 (default 8)")), ("seconds", T("number", "the span they cover, up to 3600 (default 10)")))))
     );
 
     public static void Start(int port)
