@@ -172,6 +172,8 @@ directly. `http://127.0.0.1:7825/status` is a plain-text summary.
 | `serial_login` | wait for `login:` and log in |
 | `serial_reset` | send the reset sequence and wait for the boot banner |
 | `serial_tail` | the last N characters, read or not |
+| `serial_history` | page through everything a port has sent since the bench started (the newest 1 GiB by default), by byte position, with arrival times |
+| `serial_find` | search all of that for a text, newest first or oldest first, each match with its position, time and line |
 | `serial_screen` | the terminal screen as drawn, with scrollback |
 | `serial_record_start` / `_stop` / `_list` | record ports to files |
 | `bench_clients` | the connected sessions and what each is doing |
@@ -196,6 +198,7 @@ same folder. Most settings are set from the windows. The rest:
 | `ResetSequence` | `ESC ESC ESC RESET` | what the reset tool and button send |
 | `ResetBanner` | `CORSAC boot` | what the reset tool waits for |
 | `ShellPrompt` | `# ` | what `serial_command` and `serial_login` wait for |
+| `SerialHistoryMiB` | `1024` | how much of each port's output is kept in memory for `serial_history` and `serial_find` |
 
 ## License
 
