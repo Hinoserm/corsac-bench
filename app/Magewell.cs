@@ -290,9 +290,14 @@ public sealed class MagewellSource : VideoSource
             bool locked = signal.state == MW.SignalState.Locked;
             int w = Settings.CaptureW > 0 ? Settings.CaptureW : locked ? signal.cx : 1024;
             int h = Settings.CaptureH > 0 ? Settings.CaptureH : locked ? signal.cy : 768;
+            // EVERY OPENING STARTS FROM BLACK: a new mode or a lost signal
+            // leaves nothing of the old picture behind.
+            Blank();
             NativeW = locked ? signal.cx : 0;
             NativeH = locked ? signal.cy : 0;
-            Interlaced = signal.bInterlaced != 0;
+            Interlaced = locked && signal.bInterlaced != 0;
+            Fps = 0;
+            CaptureLatencyMs = -1;
             SignalHz = locked && signal.dwFrameDuration > 0 ? (Interlaced ? 20_000_000.0 : 10_000_000.0) / signal.dwFrameDuration : 0;
             Error = locked ? "" : signal.state == MW.SignalState.None ? "no signal" : $"signal {signal.state.ToString().ToLowerInvariant()}";
 
@@ -406,7 +411,12 @@ public sealed class MagewellSource : VideoSource
                 // OURS, by the card's own clock.
                 var fi = new MW.FrameInfo();
                 if (MW.MWGetVideoFrameInfo(channel, slot, ref fi) == MW.Result.Succeeded && MW.MWGetDeviceTime(channel, out long nowTime) == MW.Result.Succeeded)
-                    CaptureLatencyMs = (nowTime - fi.fieldStart0) / 10_000.0;
+                {
+                    // Only a time the frame could have taken: a slot the card
+                    // has not stamped (just after locking) reads as nonsense.
+                    double ms = (nowTime - fi.fieldStart0) / 10_000.0;
+                    CaptureLatencyMs = ms >= 0 && ms < 1000 ? ms : -1;
+                }
 
                 count++;
                 if (measured.ElapsedMilliseconds - measuredAt >= 1000)

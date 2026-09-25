@@ -61,6 +61,9 @@ public abstract class VideoSource
     public event Action<VideoFrame>? Frame;
     /// Raised on the capture thread whenever more rows of the current frame land.
     public event Action<VideoFrame>? Rows;
+    /// Raised when there is no picture any more (a new mode, a lost signal):
+    /// whatever shows the old one must drop it.
+    public event Action? Cleared;
 
     protected VideoSource(string device) { Device = device; }
 
@@ -107,6 +110,14 @@ public abstract class VideoSource
 
     /// The frame that was arriving did not complete.
     protected void Abandon() => _current = null;
+
+    /// No picture: nothing from before may stay on screen.
+    protected void Blank()
+    {
+        _current = null;
+        _latest = null;
+        Cleared?.Invoke();
+    }
 
     readonly object _waiters = new();
 

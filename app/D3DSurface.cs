@@ -75,9 +75,9 @@ float4 ps(V v) : SV_Target
         {
             if (!ReferenceEquals(source, _source))
             {
-                if (_source != null) _source.Rows -= OnFrame;
+                if (_source != null) { _source.Rows -= OnFrame; _source.Cleared -= OnCleared; }
                 _source = source;
-                if (_source != null) _source.Rows += OnFrame;
+                if (_source != null) { _source.Rows += OnFrame; _source.Cleared += OnCleared; }
             }
             _src = src; _dst = dst; _smooth = smooth; _present = present;
         }
@@ -85,6 +85,8 @@ float4 ps(V v) : SV_Target
     }
 
     void OnFrame(VideoFrame f) => _kick.Set();
+    void OnCleared() { _clear = true; _kick.Set(); }
+    volatile bool _clear;
 
     protected override void OnHandleCreated(EventArgs e)
     {
@@ -106,7 +108,7 @@ float4 ps(V v) : SV_Target
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) lock (_gate) { if (_source != null) _source.Rows -= OnFrame; _source = null; }
+        if (disposing) lock (_gate) { if (_source != null) { _source.Rows -= OnFrame; _source.Cleared -= OnCleared; } _source = null; }
         base.Dispose(disposing);
     }
 
@@ -213,6 +215,15 @@ float4 ps(V v) : SV_Target
                 // ONLY THE ROWS THAT ARE NEW: the rest of the texture keeps
                 // what it had, the frame before's lower part until this
                 // frame's lines replace it, as a CRT's beam would.
+                // NOTHING LEFT OVER: on a new mode or a lost signal the old
+                // picture goes, and the next frame starts on black.
+                if (_clear)
+                {
+                    _clear = false;
+                    view?.Dispose(); texture?.Dispose();
+                    view = null; texture = null;
+                    shownSeq = 0; shownRows = 0;
+                }
                 var frame = source?.Current;
                 bool completed = false;
                 if (frame != null)
@@ -224,6 +235,8 @@ float4 ps(V v) : SV_Target
                         view?.Dispose(); texture?.Dispose();
                         texture = device.CreateTexture2D(new Texture2DDescription(Format.B8G8R8A8_UNorm, (uint)frame.Width, (uint)frame.Height, 1, 1, BindFlags.ShaderResource));
                         view = device.CreateShaderResourceView(texture);
+                        // Black to start with: rows the frame has not reached yet show nothing.
+                        ctx!.UpdateSubresource(new byte[frame.Width * frame.Height * 4], texture, 0, (uint)(frame.Width * 4), 0, null);
                         shownSeq = 0;
                     }
                     int from = seq == shownSeq ? shownRows : 0;

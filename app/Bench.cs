@@ -452,7 +452,7 @@ public static class Bench
                     // case another capture follows.
                     try
                     {
-                        var vf = native.Next(Math.Max(0, native.Seq - 1), 3000) ?? throw new InvalidOperationException(native.Error != "" ? native.Error : "no frame from " + device);
+                        var vf = native.Latest ?? native.Next(native.Seq, 3000) ?? throw new InvalidOperationException(native.Error != "" ? native.Error : "no frame from " + device);
                         using var b = vf.ToBitmap();
                         b.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
                         text = $"{device}, {vf.Width}x{vf.Height} (signal {native.NativeW}x{native.NativeH}, {native.SignalHz:0.##} Hz" +

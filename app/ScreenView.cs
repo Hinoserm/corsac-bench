@@ -381,9 +381,9 @@ public sealed class ScreenView : Control
                 info = $"{Short(Device)}  {src.Width}x{src.Height}" +
                        (src.Size != _frameSize ? $" of {_frameSize.Width}x{_frameSize.Height}" : "") +
                        (S.CaptureW == 0 ? "" : $" (fixed; signal {_nativeW}x{_nativeH})") +
-                       $"  {n.SignalHz:0.##} Hz{(n.Interlaced ? " interlaced" : "")}" +
+                       (n.SignalHz > 0 ? $"  {n.SignalHz:0.##} Hz{(n.Interlaced ? " interlaced" : "")}" : "") +
                        (n.TimingText != "" ? $"  {n.TimingText}" : "") +
-                       $"  {n.Fps:0} fps" +
+                       (n.Fps > 0 ? $"  {n.Fps:0} fps" : "") +
                        (n.CaptureLatencyMs >= 0 ? $"  card {n.CaptureLatencyMs:0.0} ms" : "") +
                        (_surface!.PresentMs >= 0 ? $" + display {_surface.PresentMs:0.0} ms" : "") +
                        (S.Present == ScreenPresent.LowestLatency && _surface.TearingSupported ? "  tearing allowed" : "  synchronised") +
