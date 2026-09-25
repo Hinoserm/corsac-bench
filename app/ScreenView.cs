@@ -31,10 +31,10 @@ public enum ScreenScale
 
 public enum ShapeChange
 {
+    /// <summary>The window keeps its size and place; only the picture's scaling inside it changes.</summary>
+    KeepWindow,
     /// <summary>The window changes size to show the new picture at the chosen scale.</summary>
     ResizeWindow,
-    /// <summary>The window stays; the picture refits inside it.</summary>
-    KeepWindow,
 }
 
 public sealed class ScreenSettings
@@ -46,7 +46,7 @@ public sealed class ScreenSettings
     public ScreenScale Scale { get; set; } = ScreenScale.Fit;
     public bool Smooth { get; set; } = true;
     public bool TrimBorders { get; set; }
-    public ShapeChange OnChange { get; set; } = ShapeChange.ResizeWindow;
+    public ShapeChange OnChange { get; set; } = ShapeChange.KeepWindow;
     public int MaxFps { get; set; } = 30;
     public bool ShowInfo { get; set; } = true;
     /// <summary>For devices with a native low-latency source: how frames meet the display.</summary>
@@ -379,6 +379,7 @@ public sealed class ScreenView : Control
                        (src.Size != _frameSize ? $" of {_frameSize.Width}x{_frameSize.Height}" : "") +
                        (S.CaptureW == 0 ? "" : $" (fixed; signal {_nativeW}x{_nativeH})") +
                        $"  {n.SignalHz:0.##} Hz{(n.Interlaced ? " interlaced" : "")}" +
+                       (n.TimingText != "" ? $"  {n.TimingText}" : "") +
                        $"  {n.Fps:0} fps" +
                        (n.CaptureLatencyMs >= 0 ? $"  card {n.CaptureLatencyMs:0.0} ms" : "") +
                        (_surface!.PresentMs >= 0 ? $" + display {_surface.PresentMs:0.0} ms" : "") +
@@ -470,8 +471,8 @@ public sealed class ScreenView : Control
             Item("Whole multiples (crisp)", S.Scale == ScreenScale.Whole, () => S.Scale = ScreenScale.Whole),
             Item("Actual size", S.Scale == ScreenScale.Actual, () => S.Scale = ScreenScale.Actual)));
         m.Items.Add(Sub("When the mode changes",
-            Item("Resize the window to the new picture", S.OnChange == ShapeChange.ResizeWindow, () => S.OnChange = ShapeChange.ResizeWindow),
-            Item("Keep the window; refit the picture", S.OnChange == ShapeChange.KeepWindow, () => S.OnChange = ShapeChange.KeepWindow)));
+            Item("Keep the window; rescale the picture inside it", S.OnChange == ShapeChange.KeepWindow, () => S.OnChange = ShapeChange.KeepWindow),
+            Item("Resize the window to the new picture", S.OnChange == ShapeChange.ResizeWindow, () => S.OnChange = ShapeChange.ResizeWindow)));
         if (_native != null)
             m.Items.Add(Sub("Presentation",
                 Item("Lowest latency (tearing allowed)", S.Present == ScreenPresent.LowestLatency, () => S.Present = ScreenPresent.LowestLatency),

@@ -50,6 +50,9 @@ public abstract class VideoSource
     public volatile string Error = "";
     public int NativeW, NativeH;
     public bool Interlaced;
+    /// The input's kind and, for analog inputs, the timing it is read with.
+    public MW.InputType InputKind;
+    public volatile string TimingText = "";
     public double SignalHz, Fps, CaptureLatencyMs = -1;
     VideoFrame? _latest, _current;
     long _seq;

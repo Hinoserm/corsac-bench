@@ -14,10 +14,12 @@ using System.Text;
 
 namespace CorsacBench;
 
-static class MW
+public static class MW
 {
     const string Dll = "LibMWCapture.dll";
 
+    public const ulong NotifyVideoInputSourceChange = 0x0004;  // MWCAP_NOTIFY_VIDEO_INPUT_SOURCE_CHANGE
+    public const ulong NotifyInputSpecificChange = 0x0010;     // MWCAP_NOTIFY_INPUT_SPECIFIC_CHANGE
     public const ulong NotifyVideoSignalChange = 0x0020;       // MWCAP_NOTIFY_VIDEO_SIGNAL_CHANGE
     public const ulong NotifyVideoFrameBuffering = 0x0100;     // MWCAP_NOTIFY_VIDEO_FRAME_BUFFERING
     public const ulong NotifyVideoFrameBuffered = 0x0400;      // MWCAP_NOTIFY_VIDEO_FRAME_BUFFERED
@@ -25,6 +27,42 @@ static class MW
 
     public enum Result { Succeeded = 0, Failed, InvalidParams }
     public enum SignalState { None = 0, Unsupported, Locking, Locked }
+    [Flags] public enum InputType : uint { None = 0, Hdmi = 0x01, Vga = 0x02, Sdi = 0x04, Component = 0x08, Cvbs = 0x10, YC = 0x20 }
+
+    /// MWCAP_VIDEO_TIMING: one way to read an analog line (MWCaptureExtension.h).
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public record struct Timing
+    {
+        public uint dwType;
+        public uint dwPixelClock;
+        public byte bInterlaced, bySyncType, bHSPolarity, bVSPolarity;
+        public ushort wHActive, wHFrontPorch, wHSyncWidth, wHBackPorch;
+        public ushort wVActive, wVFrontPorch, wVSyncWidth, wVBackPorch;
+
+        public int HTotal => wHActive + wHFrontPorch + wHSyncWidth + wHBackPorch;
+        public override string ToString() => $"{wHActive}x{wVActive} ({HTotal} per line, {dwPixelClock / 1e6:0.###} MHz)";
+    }
+
+    /// MWCAP_VIDEO_TIMING_ARRAY (MWUSBCaptureExtension.h).
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct TimingArray
+    {
+        public byte byNumTimings;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)] public Timing[] aTimings;
+    }
+
+    /// MWCAP_INPUT_SPECIFIC_STATUS, read raw: BOOLEAN bValid; DWORD
+    /// dwVideoInputType; then a union whose VGA/component member is
+    /// MWCAP_COMPONENT_SPECIFIC_STATUS: MWCAP_VIDEO_SYNC_INFO (12 bytes),
+    /// BOOLEAN bTriLevelSync, MWCAP_VIDEO_TIMING videoTiming (at byte 18).
+    public static (InputType type, Timing? timing) InputStatus(IntPtr channel)
+    {
+        var raw = new byte[1024];
+        if (MWGetInputSpecificStatus(channel, raw) != Result.Succeeded || raw[0] == 0) return (InputType.None, null);
+        var type = (InputType)BitConverter.ToUInt32(raw, 1);
+        if ((type & (InputType.Vga | InputType.Component)) == 0) return (type, null);
+        return (type, MemoryMarshal.Read<Timing>(raw.AsSpan(18)));
+    }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1, CharSet = CharSet.Ansi)]
     public struct ChannelInfo
@@ -108,6 +146,9 @@ static class MW
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWGetVideoFrameInfo(IntPtr channel, byte i, ref FrameInfo info);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWGetVideoCaptureStatus(IntPtr channel, ref CaptureStatus status);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWGetDeviceTime(IntPtr channel, out long time);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWGetInputSpecificStatus(IntPtr channel, byte[] status);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWGetPreferredVideoTimings(IntPtr channel, ref TimingArray timings);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWSetVideoTiming(IntPtr channel, ref Timing timing);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWPinVideoBuffer(IntPtr channel, IntPtr buffer, uint size);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] public static extern Result MWUnpinVideoBuffer(IntPtr channel, IntPtr buffer);
 
@@ -236,6 +277,7 @@ public sealed class MagewellSource : VideoSource
         _reopen = false;
         IntPtr channel = MW.MWOpenChannelByPath(_path);
         if (channel == IntPtr.Zero) throw new InvalidOperationException("could not open the Magewell channel");
+        Judgement? judge;
         IntPtr captureEvent = CreateEvent(IntPtr.Zero, false, false, null);
         IntPtr notifyEvent = CreateEvent(IntPtr.Zero, false, false, null);
         ulong notify = 0;
@@ -254,6 +296,40 @@ public sealed class MagewellSource : VideoSource
             SignalHz = locked && signal.dwFrameDuration > 0 ? (Interlaced ? 20_000_000.0 : 10_000_000.0) / signal.dwFrameDuration : 0;
             Error = locked ? "" : signal.state == MW.SignalState.None ? "no signal" : $"signal {signal.state.ToString().ToLowerInvariant()}";
 
+            // AN ANALOG INPUT CARRIES NO PIXEL CLOCK. Where several standard
+            // timings fit the same sync (720x400 text and 640x400 graphics,
+            // and their like at every resolution), the card lists them and
+            // the picture says which is right: see Judge.
+            var (inputType, timing) = MW.InputStatus(channel);
+            InputKind = inputType;
+            judge = null;
+            if (locked && timing != null)
+            {
+                var list = new MW.TimingArray { aTimings = new MW.Timing[8] };
+                if (MW.MWGetPreferredVideoTimings(channel, ref list) == MW.Result.Succeeded)
+                {
+                    var candidates = list.aTimings.Take(Math.Min((int)list.byNumTimings, 8)).Distinct().ToList();
+                    if (!candidates.Contains(timing.Value)) candidates.Insert(0, timing.Value);
+                    if (candidates.Count > 1)
+                    {
+                        string key = string.Join("|", candidates.OrderBy(t => t.dwPixelClock).ThenBy(t => t.wHActive));
+                        if (!_judgements.TryGetValue(key, out judge)) _judgements[key] = judge = new Judgement(candidates);
+                        judge.Current = candidates.IndexOf(timing.Value);
+                        if (judge.Asked >= 0 && judge.Asked != judge.Current)
+                        {
+                            // The card would not read the line that way: never ask again.
+                            judge.Scores[judge.Asked] = double.MaxValue;
+                            if (judge.Best == judge.Asked) judge.Best = -1;
+                        }
+                        judge.Asked = -1;
+                        // A settled choice for this sync, from before: straight to it.
+                        if (judge.Best >= 0 && judge.Best != judge.Current && SetTiming(channel, judge, judge.Best)) return;
+                    }
+                }
+            }
+            TimingText = timing == null ? "" : $"{inputType.ToString().ToUpperInvariant()} {timing}" +
+                (judge == null ? "" : judge.Best == judge.Current ? $", best of {judge.Candidates.Count}" : $", judging {judge.Candidates.Count}");
+
             // THREE PINNED BUFFERS: the card writes one while the display
             // copies from the newest complete one (or the one before it, if
             // it began copying just as a new one completed).
@@ -266,7 +342,8 @@ public sealed class MagewellSource : VideoSource
 
             if (MW.MWStartVideoCapture(channel, captureEvent) != MW.Result.Succeeded) throw new InvalidOperationException("the card would not start capturing");
             capturing = true;
-            notify = MW.MWRegisterNotify(channel, notifyEvent, MW.NotifyVideoFrameBuffering | MW.NotifyVideoSignalChange);
+            notify = MW.MWRegisterNotify(channel, notifyEvent, MW.NotifyVideoFrameBuffering | MW.NotifyVideoSignalChange
+                | MW.NotifyInputSpecificChange | MW.NotifyVideoInputSourceChange);
             if (notify == 0) throw new InvalidOperationException("the card would not take a notification");
 
             long count = 0;
@@ -280,6 +357,12 @@ public sealed class MagewellSource : VideoSource
                     continue;
                 }
                 MW.MWGetNotifyStatus(channel, notify, out ulong status);
+                if ((status & (MW.NotifyInputSpecificChange | MW.NotifyVideoInputSourceChange)) != 0)
+                {
+                    // Another input, or the card read the analog line another way.
+                    var (_, t) = MW.InputStatus(channel);
+                    if (t != timing) return;
+                }
                 if ((status & MW.NotifyVideoSignalChange) != 0)
                 {
                     // A NEW MODE: opened again at its size (when following the signal).
@@ -334,6 +417,7 @@ public sealed class MagewellSource : VideoSource
                 }
                 _previous = Latest;
                 Publish(frame);
+                if (judge != null && Settings.CaptureW == 0 && !Interlaced && Judge(channel, judge, frame)) return;
             }
         }
         finally
@@ -349,4 +433,106 @@ public sealed class MagewellSource : VideoSource
 
     long FramesAtMeasure;
     VideoFrame? _previous;
+
+    // ---- which analog timing ------------------------------------------------
+
+    /// The candidate timings for one sync, and what the picture said of each.
+    sealed class Judgement(List<MW.Timing> candidates)
+    {
+        public readonly List<MW.Timing> Candidates = candidates;
+        public readonly double?[] Scores = new double?[candidates.Count];
+        public int Current = -1, Best = -1, Asked = -1;
+        public double BestScore;
+        public readonly List<double> Evidence = new();
+        public long MeasuredAt;
+    }
+
+    readonly Dictionary<string, Judgement> _judgements = new();
+
+    /// Sampled at the right clock, a pixel edge falls between two samples;
+    /// at a wrong one, samples straddle the edges and come out between the
+    /// colours either side. On the live 720x400 text screen: 0.018 at the
+    /// right timing, 0.29 to 0.52 at any wrong one.
+    const double Crisp = 0.08, Smeared = 0.15;
+    const int MinEdges = 2000;
+
+    /// One look at a complete frame (a few times a second). True when the
+    /// timing was changed and the channel must be opened again.
+    bool Judge(IntPtr channel, Judgement j, VideoFrame f)
+    {
+        long now = Environment.TickCount64;
+        if (now - j.MeasuredAt < 200) return false;
+        j.MeasuredAt = now;
+        var (score, edges) = Smear(f);
+        if (edges < MinEdges) return false;           // a blank or flat screen says nothing
+        j.Evidence.Add(score);
+        if (j.Evidence.Count < 3) return false;
+        double mean = j.Evidence.Average();
+        j.Evidence.Clear();
+
+        if (j.Best >= 0 && j.Best == j.Current)
+        {
+            // Settled; but the machine may have changed mode inside the same
+            // sync (text to graphics). Judged afresh if the picture smears.
+            if (mean <= Math.Max(Smeared, j.BestScore * 1.5 + 0.03)) { j.BestScore = Math.Min(j.BestScore, mean); return false; }
+            Array.Clear(j.Scores);
+            j.Best = -1;
+        }
+
+        j.Scores[j.Current] = mean;
+        if (mean < Crisp) { Settle(j, j.Current, mean); return false; }
+        int next = Array.FindIndex(j.Scores, s => s == null);
+        if (next < 0 && j.Scores.All(s => s == double.MaxValue)) return false;
+        if (next >= 0) return SetTiming(channel, j, next);
+        int best = 0;
+        for (int i = 1; i < j.Scores.Length; i++) if (j.Scores[i] < j.Scores[best]) best = i;
+        Settle(j, best, j.Scores[best]!.Value);
+        return best != j.Current && SetTiming(channel, j, best);
+    }
+
+    void Settle(Judgement j, int best, double score)
+    {
+        j.Best = best;
+        j.BestScore = score;
+        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[best]}, best of {j.Candidates.Count}";
+    }
+
+    bool SetTiming(IntPtr channel, Judgement j, int i)
+    {
+        var t = j.Candidates[i];
+        if (MW.MWSetVideoTiming(channel, ref t) != MW.Result.Succeeded) { j.Scores[i] = double.MaxValue; return false; }
+        j.Asked = i;
+        j.Evidence.Clear();
+        return true;
+    }
+
+    /// The share of pixel edges whose middle sample lies between the colours
+    /// either side of it, over rows spread down the frame.
+    static unsafe (double score, int edges) Smear(VideoFrame f)
+    {
+        int edges = 0, smeared = 0;
+        int step = Math.Max(1, f.Height / 150);
+        fixed (byte* p0 = f.Pixels)
+        {
+            for (int y = 0; y < f.Height; y += step)
+            {
+                byte* row = p0 + y * f.Stride;
+                int L(int x) { byte* p = row + x * 4; return (p[2] * 2 + p[1] * 5 + p[0]) >> 3; }
+                int a = L(0), b = L(1);
+                for (int x = 2; x < f.Width; x++)
+                {
+                    int c = L(x);
+                    int lo = Math.Min(a, c), hi = Math.Max(a, c);
+                    if (hi - lo >= 64)
+                    {
+                        edges++;
+                        int q = (hi - lo) >> 2;
+                        if (b > lo + q && b < hi - q) smeared++;
+                    }
+                    a = b; b = c;
+                }
+            }
+        }
+        return (edges == 0 ? 0 : (double)smeared / edges, edges);
+    }
 }

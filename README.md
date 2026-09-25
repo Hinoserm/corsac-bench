@@ -66,7 +66,8 @@ works through DirectShow. See [Magewell Pro Capture cards](#magewell-pro-capture
 - Each device has settings for when the video mode changes:
   - monitor 4:3, square pixels, or stretch
   - fit, whole multiples, or actual size
-  - resize the window, or keep it
+  - keep the window's size and place and rescale the picture inside it (the
+    default), or resize the window to the new picture
   - black-border trimming, frame rate, smoothing
 - `vga_capture` gives a session one frame as a PNG.
 
@@ -84,7 +85,17 @@ its low-latency mode:
   tearing at the cost of up to one refresh
 - pixels are copied untouched: BGRA straight through, no deinterlacing, no
   aspect or colour conversion, point sampling unless smoothing is on
-- the information bar shows the signal's refresh rate, the capture rate, the
+- frames always arrive at the input's own resolution; a mode change reopens
+  the channel at the new size the moment the card reports it
+- analog inputs carry no pixel clock, so one sync can fit several timings
+  (720x400 text and 640x400 graphics are the same sync). The card lists
+  every timing that fits, at any resolution the card supports, and the bench
+  tries them and keeps the one whose pixels come out crisp. Sampling at the
+  wrong clock smears pixel edges between samples, and the bench measures
+  that on the live picture. It remembers the choice for each sync, and judges
+  again if the machine changes mode within the same sync.
+- the information bar shows the signal's refresh rate, the analog timing in
+  use, the capture rate, the
   card's own latency (the frame's first line on the wire to the whole frame
   in memory) and the time from there to the display
 
