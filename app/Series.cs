@@ -106,7 +106,8 @@ public static class Series
         return shots;
     }
 
-    /// The shape a frame is seen at: square pixels, as captured.
+    /// The shape a frame is laid out at: square pixels, one captured pixel
+    /// for one, since this goes to a session, never the monitor's aspect.
     static double Shape(Bitmap b) => (double)b.Width / b.Height;
 
     static Bitmap Lay(List<Shot> shots)

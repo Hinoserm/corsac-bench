@@ -50,6 +50,8 @@ public abstract class VideoSource
     public volatile string Error = "";
     public int NativeW, NativeH;
     public bool Interlaced;
+    /// The picture aspect the source reports for the signal (16:9, 4:3...), 0 when it reports none.
+    public int AspectX, AspectY;
     /// The input's kind and, for analog inputs, the timing it is read with.
     public MW.InputType InputKind;
     public volatile string TimingText = "";

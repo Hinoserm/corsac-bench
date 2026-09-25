@@ -11,10 +11,10 @@ namespace CorsacBench;
 
 public enum ScreenAspect
 {
+    /// <summary>The picture aspect the card reports for the signal, as a monitor shows it (720x400 text drawn tall on a 4:3 tube, 1920x1080 at 16:9); square pixels when the device reports none.</summary>
+    Monitor,
     /// <summary>One captured pixel is one square pixel: the picture is the shape of what arrives.</summary>
     Pixels,
-    /// <summary>Every mode fills a 4:3 picture, as a CRT shows it: 720x400 text is stretched tall.</summary>
-    Monitor,
     /// <summary>Fills the view whatever its shape.</summary>
     Stretch,
 }
@@ -42,7 +42,7 @@ public sealed class ScreenSettings
     /// <summary>0 x 0 follows the signal coming in; anything else is a fixed capture size.</summary>
     public int CaptureW { get; set; }
     public int CaptureH { get; set; }
-    public ScreenAspect Aspect { get; set; } = ScreenAspect.Pixels;
+    public ScreenAspect Aspect { get; set; } = ScreenAspect.Monitor;
     public ScreenScale Scale { get; set; } = ScreenScale.Fit;
     public bool Smooth { get; set; } = true;
     public bool TrimBorders { get; set; }
@@ -276,10 +276,25 @@ public sealed class ScreenView : Control
         }
     }
 
-    /// <summary>The size the picture is meant to be seen at, before any window scaling.</summary>
-    Size Shape(Rectangle src) => S.Aspect == ScreenAspect.Monitor
-        ? new Size(Math.Max(src.Width, src.Height * 4 / 3), Math.Max(src.Width, src.Height * 4 / 3) * 3 / 4)
-        : src.Size;
+    /// <summary>
+    /// The size the picture is meant to be seen at, before any window
+    /// scaling. Like a monitor: the whole frame takes the picture aspect the
+    /// card reports for the signal (a trimmed part keeps the same pixel
+    /// shape), grown on one side only so no captured pixel is lost. Without
+    /// a report (DirectShow devices), square pixels.
+    /// </summary>
+    Size Shape(Rectangle src)
+    {
+        if (S.Aspect != ScreenAspect.Monitor || _native == null || _native.AspectX <= 0 || _native.AspectY <= 0) return src.Size;
+        Size frame;
+        lock (_gate) frame = _frameSize;
+        if (frame.IsEmpty) return src.Size;
+        // Width of one pixel over its height.
+        double pixel = (double)_native.AspectX * frame.Height / (_native.AspectY * frame.Width);
+        return pixel >= 1
+            ? new Size((int)Math.Round(src.Width * pixel), src.Height)
+            : new Size(src.Width, (int)Math.Round(src.Height / pixel));
+    }
 
     void Changed()
     {
@@ -383,6 +398,7 @@ public sealed class ScreenView : Control
                        (S.CaptureW == 0 ? "" : $" (fixed; signal {_nativeW}x{_nativeH})") +
                        (n.SignalHz > 0 ? $"  {n.SignalHz:0.##} Hz{(n.Interlaced ? " interlaced" : "")}" : "") +
                        (n.TimingText != "" ? $"  {n.TimingText}" : "") +
+                       (n.AspectX > 0 && n.AspectY > 0 ? $"  aspect {n.AspectX}:{n.AspectY}" : "") +
                        (n.Fps > 0 ? $"  {n.Fps:0} fps" : "") +
                        (n.CaptureLatencyMs >= 0 ? $"  card {n.CaptureLatencyMs:0.0} ms" : "") +
                        (_surface!.PresentMs >= 0 ? $" + display {_surface.PresentMs:0.0} ms" : "") +
@@ -421,19 +437,44 @@ public sealed class ScreenView : Control
     protected override void OnDoubleClick(EventArgs e) { Solo?.Invoke(this); base.OnDoubleClick(e); }
     protected override void OnMouseDown(MouseEventArgs e) { Chosen?.Invoke(this); base.OnMouseDown(e); }
 
+    /// <summary>
+    /// The picture for the person (Screenshot, Save, Copy): the shape the
+    /// view shows it, so Like a monitor gives 720x400 text drawn tall as the
+    /// window does. Tools that send frames to a session never come here;
+    /// they send captured pixels one for one.
+    /// </summary>
     public Bitmap? Snapshot()
     {
+        Bitmap raw;
+        Rectangle part;
         lock (_gate)
         {
             if (_native != null)
             {
                 var f = _native.Latest;
                 if (f == null) return null;
-                var r = _trim.IsEmpty || _trim.Right > f.Width || _trim.Bottom > f.Height ? new Rectangle(0, 0, f.Width, f.Height) : _trim;
-                return f.ToBitmap(r);
+                part = _trim.IsEmpty || _trim.Right > f.Width || _trim.Bottom > f.Height ? new Rectangle(0, 0, f.Width, f.Height) : _trim;
+                raw = f.ToBitmap(part);
             }
-            if (_frame == null) return null;
-            return _frame.Clone(_trim.IsEmpty ? new Rectangle(Point.Empty, _frame.Size) : _trim, PixelFormat.Format24bppRgb);
+            else
+            {
+                if (_frame == null) return null;
+                part = _trim.IsEmpty ? new Rectangle(Point.Empty, _frame.Size) : _trim;
+                raw = _frame.Clone(part, PixelFormat.Format24bppRgb);
+            }
+        }
+        var shape = S.Aspect == ScreenAspect.Monitor ? Shape(part) : part.Size;
+        if (shape == raw.Size) return raw;
+        using (raw)
+        {
+            var shaped = new Bitmap(shape.Width, shape.Height, PixelFormat.Format24bppRgb);
+            using var g = Graphics.FromImage(shaped);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.Half;
+            using var edges = new ImageAttributes();
+            edges.SetWrapMode(WrapMode.TileFlipXY);
+            g.DrawImage(raw, new Rectangle(Point.Empty, shape), 0, 0, raw.Width, raw.Height, GraphicsUnit.Pixel, edges);
+            return shaped;
         }
     }
 
@@ -467,8 +508,8 @@ public sealed class ScreenView : Control
 
         m.Items.Add(Sub("Capture size", sizes.ToArray()));
         m.Items.Add(Sub("Shape",
+            Item("Like a monitor (the aspect the card reports for the signal)", S.Aspect == ScreenAspect.Monitor, () => S.Aspect = ScreenAspect.Monitor),
             Item("Square pixels (as captured)", S.Aspect == ScreenAspect.Pixels, () => S.Aspect = ScreenAspect.Pixels),
-            Item("Like a monitor (every mode 4:3)", S.Aspect == ScreenAspect.Monitor, () => S.Aspect = ScreenAspect.Monitor),
             Item("Stretch to the window", S.Aspect == ScreenAspect.Stretch, () => S.Aspect = ScreenAspect.Stretch)));
         m.Items.Add(Sub("Scale",
             Item("Fit the window", S.Scale == ScreenScale.Fit, () => S.Scale = ScreenScale.Fit),

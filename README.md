@@ -69,7 +69,11 @@ screen, captured through a Magewell Pro Capture card.*
   that report the input resolution as their first format, such as Magewell
   Pro Capture.
 - Each device has settings for when the video mode changes:
-  - square pixels as captured (the default), monitor 4:3, or stretch
+  - like a monitor (the default): the picture aspect the card reports for
+    the signal, so 720x400 text is drawn tall and 1920x1080 stays 16:9;
+    square pixels as captured; or stretch
+  - Screenshot and Save give the picture that shape; `vga_capture` and
+    `vga_capture_series` always send captured pixels one for one
   - fit, whole multiples, or actual size
   - keep the window's size and place and rescale the picture inside it (the
     default), or resize the window to the new picture

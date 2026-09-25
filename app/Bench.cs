@@ -456,7 +456,8 @@ public static class Bench
                         using var b = vf.ToBitmap();
                         b.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
                         text = $"{device}, {vf.Width}x{vf.Height} (signal {native.NativeW}x{native.NativeH}, {native.SignalHz:0.##} Hz" +
-                               (native.TimingText != "" ? ", " + native.TimingText : "") + $"), saved to {path}";
+                               (native.TimingText != "" ? ", " + native.TimingText : "") +
+                               (native.AspectX > 0 && native.AspectY > 0 ? $", aspect {native.AspectX}:{native.AspectY}" : "") + $"), saved to {path}";
                     }
                     finally { VideoSource.Release(native, 10000); }
                 }

@@ -295,6 +295,8 @@ public sealed class MagewellSource : VideoSource
             Blank();
             NativeW = locked ? signal.cx : 0;
             NativeH = locked ? signal.cy : 0;
+            AspectX = locked ? signal.nAspectX : 0;
+            AspectY = locked ? signal.nAspectY : 0;
             Interlaced = locked && signal.bInterlaced != 0;
             Fps = 0;
             CaptureLatencyMs = -1;
