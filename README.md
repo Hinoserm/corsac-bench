@@ -12,11 +12,19 @@ a VGA capture card, and several assistant sessions and a person all want
 them at once. Windows gives a COM port to one process only; this is that
 process, and everybody else goes through it.
 
+**Low-latency capture on Magewell Pro Capture cards.** Magewell cards are
+read through Magewell's own SDK in its low-latency mode, not DirectShow. Each
+frame is drawn in stripes as it arrives, through Direct3D with tearing
+allowed, so the picture on the desktop trails the machine by a fraction of a
+frame. That is fast enough to play games through. Every other capture device
+works through DirectShow. See [Magewell Pro Capture cards](#magewell-pro-capture-cards).
+
 ```
  session ─ benchlink.py ─┐
  session ─ benchlink.py ─┼─ HTTP 127.0.0.1:7825/mcp ─ CorsacBench.exe ─┬─ COM ports
  session ─ benchlink.py ─┘                            (tray icon)       ├─ terminal and screen windows
-                                                                        └─ vgagrab.py ─ capture cards
+                                                                        ├─ LibMWCapture.dll ─ Magewell cards (low latency)
+                                                                        └─ vgagrab.py ─ other capture cards
 ```
 
 ## What it does
@@ -62,7 +70,9 @@ process, and everybody else goes through it.
   - black-border trimming, frame rate, smoothing
 - `vga_capture` gives a session one frame as a PNG.
 
-**Magewell Pro Capture cards** skip DirectShow and Python altogether. They use
+### Magewell Pro Capture cards
+
+Magewell Pro Capture cards skip DirectShow and Python altogether. They use
 the card's own SDK (`LibMWCapture.dll`, which the Magewell driver installs) in
 its low-latency mode:
 - the card writes each frame into the bench's memory in 64-line stripes while
