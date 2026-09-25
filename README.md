@@ -27,6 +27,11 @@ works through DirectShow. See [Magewell Pro Capture cards](#magewell-pro-capture
                                                                         └─ vgagrab.py ─ other capture cards
 ```
 
+![Eight frames of a CORSAC/OS login screen, taken over ten seconds by vga_capture_series, each timed in a strip beneath it](docs/vga-capture-series.png)
+
+*`vga_capture_series` with 8 frames over 10 seconds: a real machine's login
+screen, captured through a Magewell Pro Capture card.*
+
 ## What it does
 
 **Serial ports**
