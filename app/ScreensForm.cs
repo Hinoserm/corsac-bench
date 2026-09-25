@@ -21,6 +21,20 @@ public sealed class ScreensForm : Form
     readonly List<ScreenView> _views = new();
     List<string> _all = new();
     ScreenView? _solo;
+    /// The picture last clicked: the one Screenshot copies when several are shown.
+    ScreenView? _chosen;
+    // THE BUTTON BAR, under the menu: the common actions, on the picture last
+    // clicked (or the only one shown).
+    readonly ToolStrip _tools = new() { GripStyle = ToolStripGripStyle.Hidden };
+    readonly ToolStripButton _shot = Button("Screenshot", '\uE722', "Copy the picture to the clipboard, at the resolution it arrives");
+    readonly ToolStripButton _save = Button("Save picture", '\uE74E', "Save the picture as a PNG, at the resolution it arrives");
+    readonly ToolStripButton _pause = Button("Pause", '\uE769', "Hold the picture still");
+    readonly ToolStripButton _full = Button("Full screen", '\uE740', "The whole monitor for the pictures (F11; Esc or F11 to leave)");
+    FormWindowState _wasState;
+    Rectangle _wasBounds;
+    bool _isFull;
+    readonly ToolStripLabel _hint = new("right-click a picture for its settings; double-click to show it alone") { ForeColor = SystemColors.GrayText, Alignment = ToolStripItemAlignment.Right };
+    readonly System.Windows.Forms.Timer _hintBack = new() { Interval = 3000 };
     bool _quitting;
 
     /// <summary>A new, empty window, beside `near` if given.</summary>
@@ -88,8 +102,16 @@ public sealed class ScreensForm : Form
         _bar.Items.Add(_devices);
         _bar.Items.Add(_layout);
         _bar.Items.Add(new ToolStripButton("New window", null, (_, _) => NewWindow(Location)));
-        _bar.Items.Add(new ToolStripLabel("right-click a picture for its settings; double-click to show it alone") { ForeColor = SystemColors.GrayText, Alignment = ToolStripItemAlignment.Right });
+        _bar.Items.Add(_hint);
+        _tools.Items.AddRange(new ToolStripItem[] { _shot, _save, new ToolStripSeparator(), _pause, _full });
+        _shot.Click += (_, _) => Copy(Target());
+        _save.Click += (_, _) => Target()?.SaveAs();
+        _pause.Click += (_, _) => { if (Target() is { } v) v.Paused = !v.Paused; };
+        _full.Click += (_, _) => FullScreen(!_isFull);
+        KeyPreview = true;
+        _hintBack.Tick += (_, _) => { _hintBack.Stop(); _hint.Text = "right-click a picture for its settings; double-click to show it alone"; _hint.ForeColor = SystemColors.GrayText; };
         Controls.Add(_grid);
+        Controls.Add(_tools);
         Controls.Add(_bar);
         // Ticking devices keeps the menu open, so several can be picked at once.
         _devices.DropDown.Closing += (_, e) => { if (e.CloseReason == ToolStripDropDownCloseReason.ItemClicked) e.Cancel = true; };
@@ -104,7 +126,7 @@ public sealed class ScreensForm : Form
 
     void Remember()
     {
-        if (WindowState != FormWindowState.Normal) return;
+        if (WindowState != FormWindowState.Normal || _isFull) return;
         W.X = Left; W.Y = Top; W.W = Width; W.H = Height;
     }
 
@@ -159,6 +181,85 @@ public sealed class ScreensForm : Form
 
     static string Short(string device) => device.StartsWith("Video (") && device.EndsWith(")") ? device[7..^1] : device;
 
+    ScreenView? Target() => Showing().Contains(_chosen!) ? _chosen : Showing().FirstOrDefault();
+
+    /// <summary>The buttons show the state of the picture they act on.</summary>
+    void ShowState()
+    {
+        bool paused = Target()?.Paused == true;
+        _pause.Text = paused ? "Resume" : "Pause";
+        _pause.Image = Glyph(paused ? '\uE768' : '\uE769');
+        _pause.Checked = paused;
+        _pause.ToolTipText = paused ? "Let the picture move again" : "Hold the picture still";
+    }
+
+    static ToolStripButton Button(string text, char symbol, string tip) =>
+        new(text, Glyph(symbol)) { DisplayStyle = ToolStripItemDisplayStyle.ImageAndText, ToolTipText = tip };
+
+    /// <summary>The pictures on the whole monitor, without the window's frame or bars.</summary>
+    void FullScreen(bool on)
+    {
+        if (on == _isFull) return;
+        _isFull = on;
+        if (on)
+        {
+            _wasState = WindowState;
+            _wasBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            WindowState = FormWindowState.Normal;
+            FormBorderStyle = FormBorderStyle.None;
+            _bar.Visible = _tools.Visible = false;
+            Bounds = Screen.FromControl(this).Bounds;
+        }
+        else
+        {
+            FormBorderStyle = FormBorderStyle.Sizable;
+            _bar.Visible = _tools.Visible = true;
+            Bounds = _wasBounds;
+            WindowState = _wasState;
+        }
+        _full.Checked = on;
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.F11 || e.KeyCode == Keys.Escape && _isFull) { FullScreen(!_isFull); e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+
+    List<ScreenView> Showing() => _solo != null ? new List<ScreenView> { _solo } : _views;
+
+    /// <summary>A Windows symbol (Segoe MDL2 Assets, in every Windows 10 and 11) as a menu image.</summary>
+    static Bitmap Glyph(char symbol)
+    {
+        // Drawn large; the tool strip scales it to its image size for the monitor's DPI.
+        const int size = 32;
+        var b = new Bitmap(size, size);
+        using var g = Graphics.FromImage(b);
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        using var font = new Font("Segoe MDL2 Assets", size * 0.75f, GraphicsUnit.Pixel);
+        using var ink = new SolidBrush(SystemColors.ControlText);
+        using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(symbol.ToString(), font, ink, new RectangleF(0, 0, size, size), centre);
+        return b;
+    }
+
+    /// <summary>The picture, as captured, onto the clipboard; the bar says so.</summary>
+    void Copy(ScreenView? v)
+    {
+        using var b = v?.Snapshot();
+        if (v == null || b == null) { Say("no picture to copy", Color.Orange); return; }
+        Clipboard.SetImage(b);
+        Say($"copied {Short(v.Device)}, {b.Width}x{b.Height}", SystemColors.ControlText);
+    }
+
+    void Say(string text, Color colour)
+    {
+        _hint.Text = text;
+        _hint.ForeColor = colour;
+        _hintBack.Stop();
+        _hintBack.Start();
+    }
+
     /// <summary>Makes the views match the devices this window shows.</summary>
     void Sync()
     {
@@ -166,6 +267,7 @@ public sealed class ScreensForm : Form
         {
             _views.Remove(v);
             if (_solo == v) _solo = null;
+            if (_chosen == v) _chosen = null;
             v.Dispose();
         }
         foreach (var d in W.Devices.Where(d => _views.All(v => v.Device != d)))
@@ -174,6 +276,8 @@ public sealed class ScreensForm : Form
             v.ShapeChanged += FitTo;
             v.Solo += s => { _solo = _solo == s ? null : s; Arrange(); };
             v.PopOut += s => ShowDevice(s.Device, Location);
+            v.Chosen += s => { _chosen = s; ShowState(); };
+            v.PausedChanged += _ => ShowState();
             _views.Add(v);
         }
         _views.Sort((a, b) => W.Devices.IndexOf(a.Device).CompareTo(W.Devices.IndexOf(b.Device)));
@@ -207,7 +311,7 @@ public sealed class ScreensForm : Form
     /// <summary>A picture changed shape and wants the window to follow: only when it is the one shown.</summary>
     void FitTo(ScreenView v, Size wanted)
     {
-        if (WindowState != FormWindowState.Normal) return;
+        if (WindowState != FormWindowState.Normal || _isFull) return;
         var shown = _solo != null ? new List<ScreenView> { _solo } : _views;
         if (shown.Count != 1 || shown[0] != v) return;
         var chrome = Size - v.ClientSize;

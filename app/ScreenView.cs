@@ -94,6 +94,8 @@ public sealed class ScreenView : Control
     /// <summary>Raised on the UI thread when the picture changes shape; carries the size it wants shown at.</summary>
     public event Action<ScreenView, Size>? ShapeChanged;
     public event Action<ScreenView>? Solo;
+    /// <summary>The person clicked this picture.</summary>
+    public event Action<ScreenView>? Chosen;
     /// <summary>The view asks for a window of its own.</summary>
     public event Action<ScreenView>? PopOut;
 
@@ -111,6 +113,7 @@ public sealed class ScreenView : Control
         {
             _surface = new D3DSurface { ContextMenuStrip = ContextMenuStrip };
             _surface.DoubleClick += (_, _) => Solo?.Invoke(this);
+            _surface.MouseDown += (_, _) => Chosen?.Invoke(this);
             Controls.Add(_surface);
             _native.Frame += OnNative;
             _barTimer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -416,6 +419,7 @@ public sealed class ScreenView : Control
     static string Short(string device) => device.StartsWith("Video (") && device.EndsWith(")") ? device[7..^1] : device;
 
     protected override void OnDoubleClick(EventArgs e) { Solo?.Invoke(this); base.OnDoubleClick(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { Chosen?.Invoke(this); base.OnMouseDown(e); }
 
     public Bitmap? Snapshot()
     {
@@ -484,7 +488,7 @@ public sealed class ScreenView : Control
         m.Items.Add(Item("Show information", S.ShowInfo, () => S.ShowInfo = !S.ShowInfo));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(new ToolStripMenuItem("Open in a new window", null, (_, _) => PopOut?.Invoke(this)));
-        m.Items.Add(new ToolStripMenuItem(_paused ? "Resume" : "Pause", null, (_, _) => { _paused = !_paused; Place(); Invalidate(); }));
+        m.Items.Add(new ToolStripMenuItem(_paused ? "Resume" : "Pause", null, (_, _) => Paused = !Paused));
         m.Items.Add(new ToolStripMenuItem("Copy picture", null, (_, _) => { using var b = Snapshot(); if (b != null) Clipboard.SetImage(b); }));
         m.Items.Add(new ToolStripMenuItem("Save picture...", null, (_, _) => SaveAs()));
         m.Items.Add(new ToolStripMenuItem("Use for vga_capture", null, (_, _) => { Bench.DefaultVga = Device; Bench.Save(); }) { Checked = Bench.DefaultVga == Device });
@@ -492,7 +496,16 @@ public sealed class ScreenView : Control
             m.Items.Add(Sub("Mode changes", _changes.AsEnumerable().Reverse().Select(c => (ToolStripItem)new ToolStripMenuItem(c) { Enabled = false }).ToArray()));
     }
 
-    void SaveAs()
+    /// <summary>Whether the picture is held still.</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool Paused
+    {
+        get => _paused;
+        set { _paused = value; Place(); Invalidate(); PausedChanged?.Invoke(this); }
+    }
+    public event Action<ScreenView>? PausedChanged;
+
+    public void SaveAs()
     {
         using var b = Snapshot();
         if (b == null) return;
