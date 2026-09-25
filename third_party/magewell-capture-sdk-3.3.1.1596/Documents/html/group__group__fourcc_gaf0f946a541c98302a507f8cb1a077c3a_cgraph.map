@@ -1,0 +1,4 @@
+<map id="FOURCC_GetFromBitmapHeader" name="FOURCC_GetFromBitmapHeader">
+<area shape="rect" id="node2" href="$group__group__fourcc.html#gad03e360442d306b2bd1ef6bfd5998121" title="Gets color format from the bitmap header. " alt="" coords="269,5,485,32"/>
+<area shape="rect" id="node3" href="$group__group__fourcc.html#ga250a75acefd2d020393879f03e1e785e" title="Determins whether the mask is the same as specified color format. " alt="" coords="533,5,659,32"/>
+</map>

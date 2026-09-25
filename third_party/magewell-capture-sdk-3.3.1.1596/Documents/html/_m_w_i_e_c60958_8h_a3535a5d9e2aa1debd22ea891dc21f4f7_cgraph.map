@@ -1,0 +1,5 @@
+<map id="IEC60958_ParseChannelStatus" name="IEC60958_ParseChannelStatus">
+<area shape="rect" id="node2" href="$_m_w_i_e_c60958_8h.html#ab577c6be7e7ae5ad087bba433ce47f69" title="IEC60958P_GetSampleRate" alt="" coords="261,5,447,32"/>
+<area shape="rect" id="node3" href="$_m_w_i_e_c60958_8h.html#a8eff55b16e047b20e28a1a669953b107" title="IEC60958_GetBitsPerSample" alt="" coords="257,56,451,83"/>
+<area shape="rect" id="node4" href="$_m_w_i_e_c60958_8h.html#a8e917297c084bf3ca359145f5c7d9baf" title="IEC60958C_GetSampleRate" alt="" coords="261,107,447,133"/>
+</map>

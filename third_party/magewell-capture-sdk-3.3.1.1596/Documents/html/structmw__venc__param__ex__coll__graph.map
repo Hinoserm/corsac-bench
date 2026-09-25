@@ -1,0 +1,6 @@
+<map id="mw_venc_param_ex" name="mw_venc_param_ex">
+<area shape="rect" id="node2" href="$structmw__venc__amd__opengl__param.html" title="mw_venc_amd_opengl_param_t " alt="" coords="5,95,157,136"/>
+<area shape="rect" id="node3" href="$structmw__venc__param.html" title="mw_venc_param_t " alt="" coords="201,102,319,129"/>
+<area shape="rect" id="node4" href="$structmw__venc__fps.html" title="mw_venc_fps_t " alt="" coords="136,5,235,32"/>
+<area shape="rect" id="node5" href="$structmw__venc__rate__control.html" title="mw_venc_rate_control_t " alt="" coords="259,5,410,32"/>
+</map>

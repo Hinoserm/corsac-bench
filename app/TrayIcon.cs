@@ -188,6 +188,7 @@ public sealed class TrayIcon : ApplicationContext
         TerminalForm.CloseAllForExit();
         Recordings.CloseForExit();
         Vga.Stop();
+        VideoSource.StopAll();
         ExitThread();
     }
 

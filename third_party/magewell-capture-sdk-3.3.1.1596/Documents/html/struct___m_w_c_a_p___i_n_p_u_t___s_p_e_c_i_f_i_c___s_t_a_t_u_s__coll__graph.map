@@ -1,0 +1,10 @@
+<map id="_MWCAP_INPUT_SPECIFIC_STATUS" name="_MWCAP_INPUT_SPECIFIC_STATUS">
+<area shape="rect" id="node2" href="$struct___m_w_c_a_p___s_d_i___s_p_e_c_i_f_i_c___s_t_a_t_u_s.html" title="MWCAP_SDI_SPECIFIC_STATUS. " alt="" coords="420,5,595,47"/>
+<area shape="rect" id="node3" href="$struct___m_w_c_a_p___h_d_m_i___s_p_e_c_i_f_i_c___s_t_a_t_u_s.html" title="MWCAP_HDMI_SPECIFIC_STATUS. " alt="" coords="415,71,600,112"/>
+<area shape="rect" id="node4" href="$struct___m_w_c_a_p___h_d_m_i___v_i_d_e_o___t_i_m_i_n_g.html" title="MWCAP_HDMI_VIDEO_TIMING. " alt="" coords="5,78,221,105"/>
+<area shape="rect" id="node5" href="$struct___m_w_c_a_p___c_v_b_s___y_c___s_p_e_c_i_f_i_c___s_t_a_t_u_s.html" title="MWCAP_CVBS_YC_SPECIFIC_STATUS. " alt="" coords="400,136,615,177"/>
+<area shape="rect" id="node6" href="$struct___m_w_c_a_p___c_o_m_p_o_n_e_n_t___s_p_e_c_i_f_i_c___s_t_a_t_u_s.html" title="MWCAP_COMPONENT_SPECIFIC_STATUS. " alt="" coords="389,201,625,243"/>
+<area shape="rect" id="node7" href="$struct___m_w_c_a_p___v_i_d_e_o___s_y_n_c___i_n_f_o.html" title="MWCAP_VIDEO_SYNC_INFO. " alt="" coords="10,150,217,177"/>
+<area shape="rect" id="node8" href="$struct___m_w_c_a_p___v_i_d_e_o___t_i_m_i_n_g___s_e_t_t_i_n_g_s.html" title="MWCAP_VIDEO_TIMING_SETTINGS. " alt="" coords="25,201,202,243"/>
+<area shape="rect" id="node9" href="$struct___m_w_c_a_p___v_i_d_e_o___t_i_m_i_n_g.html" title="MWCAP_VIDEO_TIMING. " alt="" coords="25,267,202,294"/>
+</map>

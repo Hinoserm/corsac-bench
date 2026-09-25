@@ -62,11 +62,32 @@ process, and everybody else goes through it.
   - black-border trimming, frame rate, smoothing
 - `vga_capture` gives a session one frame as a PNG.
 
+**Magewell Pro Capture cards** skip DirectShow and Python altogether. They use
+the card's own SDK (`LibMWCapture.dll`, which the Magewell driver installs) in
+its low-latency mode:
+- the card writes each frame into the bench's memory in 64-line stripes while
+  the frame is still arriving
+- Direct3D 11 draws each stripe as it lands, on a thread of its own, through a
+  flip-model swap chain that holds at most one frame
+- by default the picture is presented without waiting for the display's
+  refresh, and can tear; *Presentation > Synchronised to the display* removes
+  tearing at the cost of up to one refresh
+- pixels are copied untouched: BGRA straight through, no deinterlacing, no
+  aspect or colour conversion, point sampling unless smoothing is on
+- the information bar shows the signal's refresh rate, the capture rate, the
+  card's own latency (the frame's first line on the wire to the whole frame
+  in memory) and the time from there to the display
+
+Every other device stays on the DirectShow path. The SDK's headers,
+libraries, documents and low-latency examples are in
+`third_party/magewell-capture-sdk-3.3.1.1596`.
+
 ## Requirements
 
 - Windows 10 or 11, with the [.NET 10 Desktop
   Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
-- For capture: Python 3.9 or later with `opencv-python` and `pygrabber`
+- For Magewell cards: the Magewell Pro Capture driver.
+- For other capture devices: Python 3.9 or later with `opencv-python` and `pygrabber`
   (`pip install opencv-python pygrabber`). Serial works without it.
 - For the bridge: any Python 3.8 or later, on Windows or in WSL. It uses the
   standard library only.

@@ -1,0 +1,7 @@
+<map id="UpgradeFirmware" name="UpgradeFirmware">
+<area shape="rect" id="node2" href="$_m_w_firmware_8cpp.html#ad180d1b4b65c245d99f265d512b8cc6d" title="ReadMWF" alt="" coords="187,5,271,32"/>
+<area shape="rect" id="node3" href="$_m_w_firmware_8cpp.html#a902aa0d995b5c4130a7270a6035e8e43" title="FreeSectionData" alt="" coords="331,31,449,57"/>
+<area shape="rect" id="node4" href="$_m_w_firmware_8cpp.html#a86a033131d53de76ed0f6ab96cfe25b2" title="VerifyData" alt="" coords="188,107,271,133"/>
+<area shape="rect" id="node6" href="$_m_w_firmware_8cpp.html#a38eb87a8b5974ff381e32496043a98d2" title="WriteFirmware" alt="" coords="176,157,283,184"/>
+<area shape="rect" id="node5" href="$_m_w_firmware_8cpp.html#adee0a68f181fe2dc940eb1fae3912af7" title="CalcCheckSum" alt="" coords="334,107,446,133"/>
+</map>

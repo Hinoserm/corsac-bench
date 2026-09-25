@@ -1,0 +1,4 @@
+<map id="FOURCC_IsPacked" name="FOURCC_IsPacked">
+<area shape="rect" id="node2" href="$group__group__fourcc.html#gaebdcf5f7f84baea5594ae7d70bbca936" title="Counts the number of bytes that a line data of image takes, depending on the width of image and the c..." alt="" coords="194,5,358,32"/>
+<area shape="rect" id="node3" href="$group__group__fourcc.html#ga3bdc13ce95c86e8ab45f8c86035d98a0" title="Counts the number of bytes that a frame takes, depending on the color format, resolution and the line..." alt="" coords="191,56,361,83"/>
+</map>

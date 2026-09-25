@@ -49,6 +49,8 @@ public sealed class ScreenSettings
     public ShapeChange OnChange { get; set; } = ShapeChange.ResizeWindow;
     public int MaxFps { get; set; } = 30;
     public bool ShowInfo { get; set; } = true;
+    /// <summary>For devices with a native low-latency source: how frames meet the display.</summary>
+    public ScreenPresent Present { get; set; } = ScreenPresent.LowestLatency;
 }
 
 /// <summary>One screens window: which devices it shows, how, and where it was.</summary>
@@ -78,7 +80,16 @@ public sealed class ScreenView : Control
     Size _shape;                        // the last picture shape, to notice a change
     readonly List<string> _changes = new();
     volatile bool _running = true, _paused;
-    readonly Thread _pump;
+    readonly Thread? _pump;
+
+    // THE CARD'S OWN PATH, for devices that have one (Magewell): the frames
+    // come from a shared VideoSource and a Direct3D surface draws them as they
+    // land. Every other device keeps the DirectShow pump above, as it was.
+    readonly VideoSource? _native;
+    readonly D3DSurface? _surface;
+    readonly System.Windows.Forms.Timer? _barTimer;
+    Size _frameSize;
+    long _trimAt;
 
     /// <summary>Raised on the UI thread when the picture changes shape; carries the size it wants shown at.</summary>
     public event Action<ScreenView, Size>? ShapeChanged;
@@ -94,21 +105,94 @@ public sealed class ScreenView : Control
         BackColor = Color.Black;
         ContextMenuStrip = new ContextMenuStrip();
         ContextMenuStrip.Opening += (_, _) => BuildMenu();
-        _pump = new Thread(Pump) { IsBackground = true, Name = "screen " + device };
-        _pump.Start();
+        try { _native = VideoSource.Use(device, settings); }
+        catch (Exception e) { _error = e.Message; }
+        if (_native != null)
+        {
+            _surface = new D3DSurface { ContextMenuStrip = ContextMenuStrip };
+            _surface.DoubleClick += (_, _) => Solo?.Invoke(this);
+            Controls.Add(_surface);
+            _native.Frame += OnNative;
+            _barTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            _barTimer.Tick += (_, _) => { if (BarShown) Invalidate(BarArea); };
+            _barTimer.Start();
+        }
+        else
+        {
+            _pump = new Thread(Pump) { IsBackground = true, Name = "screen " + device };
+            _pump.Start();
+        }
     }
 
     protected override void Dispose(bool disposing)
     {
         _running = false;
+        if (disposing && _native != null)
+        {
+            _native.Frame -= OnNative;
+            _barTimer!.Dispose();
+            VideoSource.Release(_native, 2000);
+        }
         base.Dispose(disposing);
     }
 
     public void Reopen()
     {
-        try { Vga.Open(Device, S.CaptureW, S.CaptureH); _error = ""; }
-        catch (Exception e) { _error = e.Message; }
+        if (_native != null) _native.Reopen();
+        else
+        {
+            try { Vga.Open(Device, S.CaptureW, S.CaptureH); _error = ""; }
+            catch (Exception e) { _error = e.Message; }
+        }
         _shape = Size.Empty;
+    }
+
+    bool HasPicture => _frameSize != Size.Empty;
+
+    /// A frame from the native source, on its capture thread. It is drawn
+    /// by the surface without the UI thread; the UI hears only of a new
+    /// shape or trim.
+    void OnNative(VideoFrame f)
+    {
+        var size = new Size(f.Width, f.Height);
+        Rectangle? trim = null;
+        if (!S.TrimBorders) trim = new Rectangle(Point.Empty, size);
+        else if (Environment.TickCount64 - _trimAt >= 250)
+        {
+            _trimAt = Environment.TickCount64;
+            trim = FindPicture(f.Address, f.Stride, f.Width, f.Height, 4);
+        }
+        bool changed;
+        lock (_gate)
+        {
+            var before = (_frameSize, _trim);
+            _frameSize = size;
+            _nativeW = _native!.NativeW; _nativeH = _native.NativeH; _fps = _native.Fps;
+            if (trim != null) Settle(trim.Value);
+            changed = before != (_frameSize, _trim);
+        }
+        if (changed && IsHandleCreated) BeginInvoke((Action)Changed);
+    }
+
+    /// The surface's place (the picture area) and what it draws there.
+    void Place()
+    {
+        if (_surface == null) return;
+        var area = PictureArea;
+        if (_surface.Bounds != area) _surface.Bounds = area;
+        Rectangle src, dst;
+        lock (_gate)
+        {
+            src = _frameSize.IsEmpty ? Rectangle.Empty : _trim.IsEmpty ? new Rectangle(Point.Empty, _frameSize) : _trim;
+            dst = src.IsEmpty ? Rectangle.Empty : Placement(src);
+        }
+        _surface.Show(_paused ? null : _native, src, dst, S.Smooth, S.Present);
+    }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        Place();
     }
 
     void Pump()
@@ -129,6 +213,7 @@ public sealed class ScreenView : Control
                         _frame?.Dispose();
                         _frame = f.Picture;
                         _seq = f.Seq; _fps = f.Fps; _nativeW = f.NativeW; _nativeH = f.NativeH;
+                        _frameSize = f.Picture.Size;
                         Settle(trim);
                     }
                     _error = "";
@@ -152,7 +237,7 @@ public sealed class ScreenView : Control
     {
         if (trim == _trimSeen) _trimAgree++;
         else { _trimSeen = trim; _trimAgree = 1; }
-        if (_trim.IsEmpty || _trimAgree >= 3 || _trim.Width > _frame!.Width || _trim.Height > _frame.Height)
+        if (_trim.IsEmpty || _trimAgree >= 3 || _trim.Right > _frameSize.Width || _trim.Bottom > _frameSize.Height)
             _trim = _trimSeen;
     }
 
@@ -163,14 +248,18 @@ public sealed class ScreenView : Control
     /// </summary>
     static Rectangle FindPicture(Bitmap b)
     {
-        int w = b.Width, h = b.Height;
-        var bits = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-        try
+        var bits = b.LockBits(new Rectangle(0, 0, b.Width, b.Height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+        try { return FindPicture(bits.Scan0, bits.Stride, b.Width, b.Height, 3); }
+        finally { b.UnlockBits(bits); }
+    }
+
+    static Rectangle FindPicture(IntPtr scan0, int stride, int w, int h, int bytes)
+    {
         {
             unsafe
             {
-                byte* p0 = (byte*)bits.Scan0;
-                bool Lit(int x, int y) { byte* p = p0 + y * bits.Stride + x * 3; return p[0] + p[1] + p[2] > 48; }
+                byte* p0 = (byte*)scan0;
+                bool Lit(int x, int y) { byte* p = p0 + y * stride + x * bytes; return p[0] + p[1] + p[2] > 48; }
                 bool RowLit(int y) { for (int x = 0; x < w; x += 2) if (Lit(x, y)) return true; return false; }
                 bool ColLit(int x) { for (int y = 0; y < h; y += 2) if (Lit(x, y)) return true; return false; }
                 int top = 0; while (top < h / 3 && !RowLit(top)) top++;
@@ -182,7 +271,6 @@ public sealed class ScreenView : Control
                 return Rectangle.FromLTRB(left, top, right + 1, bottom + 1);
             }
         }
-        finally { b.UnlockBits(bits); }
     }
 
     /// <summary>The size the picture is meant to be seen at, before any window scaling.</summary>
@@ -193,7 +281,7 @@ public sealed class ScreenView : Control
     void Changed()
     {
         Size shape;
-        lock (_gate) shape = _frame == null ? Size.Empty : new Size(_trim.Width, _trim.Height);
+        lock (_gate) shape = !HasPicture ? Size.Empty : new Size(_trim.Width, _trim.Height);
         if (!shape.IsEmpty && shape != _shape)
         {
             if (!_shape.IsEmpty)
@@ -204,6 +292,7 @@ public sealed class ScreenView : Control
             _shape = shape;
             if (S.OnChange == ShapeChange.ResizeWindow) ShapeChanged?.Invoke(this, Wanted(Screen.FromControl(this).WorkingArea.Size));
         }
+        Place();
         Invalidate();
     }
 
@@ -211,7 +300,7 @@ public sealed class ScreenView : Control
     public Size Wanted(Size room)
     {
         Rectangle src;
-        lock (_gate) src = _frame == null ? new Rectangle(0, 0, 720, 400) : _trim;
+        lock (_gate) src = !HasPicture ? new Rectangle(0, 0, 720, 400) : _trim;
         var shape = Shape(src);
         int bar = BarHeight;
         room = new Size(room.Width - 40, room.Height - 120 - bar);
@@ -249,12 +338,16 @@ public sealed class ScreenView : Control
 
     /// Whether the bar is shown: when asked for, or when there is something
     /// the person must see (an error, or no picture yet).
-    bool BarShown => S.ShowInfo || _error != "" || _frame == null;
+    bool BarShown => S.ShowInfo || Error != "" || !HasPicture;
+
+    string Error => _error != "" ? _error : _native?.Error is { Length: > 0 } e ? e : _surface?.Error ?? "";
 
     int BarHeight => BarShown ? TextRenderer.MeasureText("Ag", BarFont).Height + 6 : 0;
 
     /// Where the picture may go: the view less the bar.
     Rectangle PictureArea => new(0, 0, ClientSize.Width, Math.Max(1, ClientSize.Height - BarHeight));
+
+    Rectangle BarArea => new(0, PictureArea.Bottom, ClientSize.Width, ClientSize.Height - PictureArea.Bottom);
 
     Rectangle Placement(Rectangle src)
     {
@@ -278,7 +371,21 @@ public sealed class ScreenView : Control
         string info;
         lock (_gate)
         {
-            if (_frame != null)
+            if (_native != null && HasPicture)
+            {
+                var src = _trim.IsEmpty ? new Rectangle(Point.Empty, _frameSize) : _trim;
+                var n = _native;
+                info = $"{Short(Device)}  {src.Width}x{src.Height}" +
+                       (src.Size != _frameSize ? $" of {_frameSize.Width}x{_frameSize.Height}" : "") +
+                       (S.CaptureW == 0 ? "" : $" (fixed; signal {_nativeW}x{_nativeH})") +
+                       $"  {n.SignalHz:0.##} Hz{(n.Interlaced ? " interlaced" : "")}" +
+                       $"  {n.Fps:0} fps" +
+                       (n.CaptureLatencyMs >= 0 ? $"  card {n.CaptureLatencyMs:0.0} ms" : "") +
+                       (_surface!.PresentMs >= 0 ? $" + display {_surface.PresentMs:0.0} ms" : "") +
+                       (S.Present == ScreenPresent.LowestLatency && _surface.TearingSupported ? "  tearing allowed" : "  synchronised") +
+                       (_paused ? "  PAUSED" : "");
+            }
+            else if (_frame != null)
             {
                 var src = _trim.IsEmpty ? new Rectangle(Point.Empty, _frame.Size) : _trim;
                 var dst = Placement(src);
@@ -293,14 +400,14 @@ public sealed class ScreenView : Control
             else info = $"{Short(Device)}  waiting for a picture";
         }
         if (_changes.Count > 0 && S.ShowInfo) info += "   last change " + _changes[^1];
-        if (_error != "") info += "   " + _error;
+        if (Error != "") info += "   " + Error;
         if (BarShown)
         {
-            var bar = new Rectangle(0, PictureArea.Bottom, ClientSize.Width, ClientSize.Height - PictureArea.Bottom);
+            var bar = BarArea;
             using var b = new SolidBrush(Color.FromArgb(32, 32, 36));
             g.FillRectangle(b, bar);
             TextRenderer.DrawText(g, info, BarFont, new Rectangle(bar.X + 6, bar.Y, bar.Width - 12, bar.Height),
-                _error != "" ? Color.Orange : Color.Gainsboro,
+                Error != "" ? Color.Orange : Color.Gainsboro,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
     }
@@ -313,6 +420,13 @@ public sealed class ScreenView : Control
     {
         lock (_gate)
         {
+            if (_native != null)
+            {
+                var f = _native.Latest;
+                if (f == null) return null;
+                var r = _trim.IsEmpty || _trim.Right > f.Width || _trim.Bottom > f.Height ? new Rectangle(0, 0, f.Width, f.Height) : _trim;
+                return f.ToBitmap(r);
+            }
             if (_frame == null) return null;
             return _frame.Clone(_trim.IsEmpty ? new Rectangle(Point.Empty, _frame.Size) : _trim, PixelFormat.Format24bppRgb);
         }
@@ -323,7 +437,7 @@ public sealed class ScreenView : Control
     {
         a();
         Bench.Save();
-        lock (_gate) _trim = _frame == null ? Rectangle.Empty : new Rectangle(Point.Empty, _frame.Size);
+        lock (_gate) _trim = !HasPicture ? Rectangle.Empty : new Rectangle(Point.Empty, _frameSize);
         _shape = Size.Empty;
         Changed();
     }
@@ -338,7 +452,9 @@ public sealed class ScreenView : Control
         var sizes = new List<ToolStripItem> { Item("Follow the signal", S.CaptureW == 0, () => { S.CaptureW = S.CaptureH = 0; Reopen(); }), new ToolStripSeparator() };
         try
         {
-            Vga.Native(Device, out var offered);
+            IReadOnlyList<(int w, int h)> offered;
+            if (_native != null) offered = _native.Sizes;
+            else { Vga.Native(Device, out var l); offered = l; }
             foreach (var (w, h) in offered.OrderBy(s => s.w * s.h))
                 sizes.Add(Item($"{w} x {h}", S.CaptureW == w && S.CaptureH == h, () => { S.CaptureW = w; S.CaptureH = h; Reopen(); }));
         }
@@ -356,13 +472,18 @@ public sealed class ScreenView : Control
         m.Items.Add(Sub("When the mode changes",
             Item("Resize the window to the new picture", S.OnChange == ShapeChange.ResizeWindow, () => S.OnChange = ShapeChange.ResizeWindow),
             Item("Keep the window; refit the picture", S.OnChange == ShapeChange.KeepWindow, () => S.OnChange = ShapeChange.KeepWindow)));
-        m.Items.Add(Sub("Frame rate", new[] { 5, 10, 15, 30, 60 }.Select(f => (ToolStripItem)Item($"{f} fps", S.MaxFps == f, () => S.MaxFps = f)).ToArray()));
+        if (_native != null)
+            m.Items.Add(Sub("Presentation",
+                Item("Lowest latency (tearing allowed)", S.Present == ScreenPresent.LowestLatency, () => S.Present = ScreenPresent.LowestLatency),
+                Item("Synchronised to the display", S.Present == ScreenPresent.Synchronised, () => S.Present = ScreenPresent.Synchronised)));
+        else
+            m.Items.Add(Sub("Frame rate", new[] { 5, 10, 15, 30, 60 }.Select(f => (ToolStripItem)Item($"{f} fps", S.MaxFps == f, () => S.MaxFps = f)).ToArray()));
         m.Items.Add(Item("Smooth scaling", S.Smooth, () => S.Smooth = !S.Smooth));
         m.Items.Add(Item("Trim black borders", S.TrimBorders, () => S.TrimBorders = !S.TrimBorders));
         m.Items.Add(Item("Show information", S.ShowInfo, () => S.ShowInfo = !S.ShowInfo));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(new ToolStripMenuItem("Open in a new window", null, (_, _) => PopOut?.Invoke(this)));
-        m.Items.Add(new ToolStripMenuItem(_paused ? "Resume" : "Pause", null, (_, _) => { _paused = !_paused; Invalidate(); }));
+        m.Items.Add(new ToolStripMenuItem(_paused ? "Resume" : "Pause", null, (_, _) => { _paused = !_paused; Place(); Invalidate(); }));
         m.Items.Add(new ToolStripMenuItem("Copy picture", null, (_, _) => { using var b = Snapshot(); if (b != null) Clipboard.SetImage(b); }));
         m.Items.Add(new ToolStripMenuItem("Save picture...", null, (_, _) => SaveAs()));
         m.Items.Add(new ToolStripMenuItem("Use for vga_capture", null, (_, _) => { Bench.DefaultVga = Device; Bench.Save(); }) { Checked = Bench.DefaultVga == Device });

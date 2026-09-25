@@ -430,15 +430,35 @@ public static class Bench
             case "vga_capture":
             {
                 var device = Vga.Resolve(Str(a, "device"));
-                using var f = Vga.Frame(device, 0);
                 var path = Path.Combine(Dir, "vga.png");
                 using var ms = new MemoryStream();
-                f.Picture.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                string text;
+                var native = VideoSource.Use(device);
+                if (native != null)
+                {
+                    // The card's own path: the next complete frame (a running
+                    // view's latest if it is fresh), kept open a little while in
+                    // case another capture follows.
+                    try
+                    {
+                        var vf = native.Next(Math.Max(0, native.Seq - 1), 3000) ?? throw new InvalidOperationException(native.Error != "" ? native.Error : "no frame from " + device);
+                        using var b = vf.ToBitmap();
+                        b.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        text = $"{device}, {vf.Width}x{vf.Height} (signal {native.NativeW}x{native.NativeH}), saved to {path}";
+                    }
+                    finally { VideoSource.Release(native, 10000); }
+                }
+                else
+                {
+                    using var f = Vga.Frame(device, 0);
+                    f.Picture.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    text = $"{device}, {f.Picture.Width}x{f.Picture.Height} (signal {f.NativeW}x{f.NativeH}), saved to {path}";
+                }
                 File.WriteAllBytes(path, ms.ToArray());
                 return new JsonObject
                 {
                     ["content"] = new JsonArray(
-                        new JsonObject { ["type"] = "text", ["text"] = $"{device}, {f.Picture.Width}x{f.Picture.Height} (signal {f.NativeW}x{f.NativeH}), saved to {path}" },
+                        new JsonObject { ["type"] = "text", ["text"] = text },
                         new JsonObject { ["type"] = "image", ["data"] = Convert.ToBase64String(ms.ToArray()), ["mimeType"] = "image/png" }),
                 };
             }

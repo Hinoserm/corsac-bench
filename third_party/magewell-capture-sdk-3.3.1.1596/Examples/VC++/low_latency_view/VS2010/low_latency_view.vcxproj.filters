@@ -1,0 +1,66 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_demo.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_draw.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_glfw\imgui_impl_glfw.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_opengl3\imgui_impl_opengl3.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_widgets.cpp">
+      <Filter>imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\common\opengl_render\opengl_render.cpp">
+      <Filter>opengl_render</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\low_latency_capture.cpp" />
+    <ClCompile Include="..\src\low_latency_view.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\OpenGL\gl3w\GL\glcorearb.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imstb_truetype.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_glfw\imgui_impl_glfw.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imgui_opengl3\imgui_impl_opengl3.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imstb_rectpack.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\..\..\3rdPart\imgui_1_71\imstb_textedit.h">
+      <Filter>imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\common\opengl_render\opengl_render.h">
+      <Filter>opengl_render</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\common\opengl_render\opengl_shader.h">
+      <Filter>opengl_render</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\low_latency_capture.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="imgui">
+      <UniqueIdentifier>{eccdc8ca-fbf5-468c-bb3a-8cdf504ee85f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="opengl_render">
+      <UniqueIdentifier>{ba8da687-5852-40fb-8fc3-7d4ed63dc4f7}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

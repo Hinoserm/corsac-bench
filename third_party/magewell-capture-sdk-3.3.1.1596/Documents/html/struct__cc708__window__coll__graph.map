@@ -1,0 +1,6 @@
+<map id="_cc708_window" name="_cc708_window">
+<area shape="rect" id="node2" href="$struct__cc708__cell.html" title="mw_cc708_cell_t cc708 character unit " alt="" coords="5,5,96,32"/>
+<area shape="rect" id="node3" href="$struct__cc708__pen__attrib.html" title="mw_cc708_pen_attrib_t cc708 pen property " alt="" coords="120,5,248,32"/>
+<area shape="rect" id="node4" href="$struct__cc708__window__attrib.html" title="Property of mw_cc708_window_attrib_t Attribution of the cc708 captions window. " alt="" coords="272,5,421,32"/>
+<area shape="rect" id="node5" href="$struct__cc708__pen__color.html" title="mw_cc708_pen_color_t cc708 pen color " alt="" coords="446,5,573,32"/>
+</map>
