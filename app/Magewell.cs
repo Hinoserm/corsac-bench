@@ -221,9 +221,11 @@ public sealed class MagewellSource : VideoSource
     {
         while (_run)
         {
+            // Lingering with nobody watching: the channel stays closed.
+            if (Users <= 0) { Thread.Sleep(50); continue; }
+            // A new mode reopens at once; only a failure waits before trying again.
             try { Session(); }
-            catch (Exception e) { Error = e.Message; }
-            if (_run) Thread.Sleep(500);
+            catch (Exception e) { Error = e.Message; if (_run) Thread.Sleep(500); }
         }
     }
 
