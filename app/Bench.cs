@@ -50,6 +50,9 @@ public sealed class BenchConfig
     public string ResetBanner { get; set; } = "CORSAC boot";
     /// The shell prompt serial_command waits for, at the start of a line.
     public string ShellPrompt { get; set; } = "# ";
+    /// How much of each port's output the bench keeps in memory for
+    /// serial_history and serial_find; the oldest goes once it is full.
+    public int SerialHistoryMiB { get; set; } = 1024;
 }
 
 public static class Bench
@@ -327,6 +330,58 @@ public static class Bench
                 var got = l.Take(ref at);
                 SetCursor(c, l, at);
                 return Ok(Text(got));
+            }
+            case "serial_history":
+            {
+                // A page of everything the port has sent, by position.
+                var l = Line(Str(a, "port"));
+                int bytes = (int)Math.Clamp(Num(a, "bytes", 16384), 1, CorsacBench.Line.Most);
+                long start = l.Start, end = l.End;
+                long from = a["from"] == null ? end - bytes : (long)Num(a, "from", 0);
+                if (from < 0) from = end + from;
+                from = Math.Clamp(from, start, end);
+                long to = Math.Min(end, from + bytes);
+                var page = l.Read(from, to);
+                string When(long at) => l.When(at) is { } w ? w.ToString("yyyy-MM-dd HH:mm:ss") : "?";
+                var head = $"[{l.Name}: bytes {from} to {to} of {start} to {end} held (keeps the newest {l.Capacity >> 20} MiB)" +
+                           (to > from ? $"; arrived {When(from)} to {When(to - 1)}" : "") +
+                           (from > start ? $"; earlier page: from={Math.Max(start, from - bytes)}" : "; this is the oldest held") +
+                           (to < end ? $"; later page: from={to}" : "; this is the newest") + "]\n";
+                return Ok(head + Text(page));
+            }
+            case "serial_find":
+            {
+                var l = Line(Str(a, "port"));
+                string needle = Str(a, "text") is { Length: > 0 } t ? t : throw new ArgumentException("text is required");
+                bool backwards = Bool(a, "backwards") ?? true;
+                int count = (int)Math.Clamp(Num(a, "count", 20), 1, 200);
+                long start = l.Start, end = l.End;
+                long at = a["from"] == null ? (backwards ? end : start) : (long)Num(a, "from", 0);
+                if (at < 0) at = end + at;
+                at = Math.Clamp(at, start, end);
+                var bytes = Encoding.Latin1.GetBytes(needle);
+                var sb = new StringBuilder();
+                int found = 0;
+                long next = at;
+                while (found < count)
+                {
+                    long hit = backwards ? l.Find(start, next, bytes, true) : l.Find(next, end, bytes, false);
+                    if (hit < 0) { next = -1; break; }
+                    found++;
+                    // The line it is on, cut to 300 characters either side.
+                    long ls = hit, le = hit + bytes.Length;
+                    var before = l.Read(Math.Max(start, hit - 300), hit);
+                    int nl = Array.LastIndexOf(before, (byte)'\n');
+                    ls = hit - before.Length + nl + 1;
+                    var after = l.Read(le, Math.Min(end, le + 300));
+                    int nr = Array.IndexOf(after, (byte)'\n');
+                    le += nr < 0 ? after.Length : nr;
+                    sb.Append($"{hit}  {(l.When(hit) is { } w ? w.ToString("yyyy-MM-dd HH:mm:ss") : "?")}  {Text(l.Read(ls, le)).TrimEnd()}\n");
+                    next = backwards ? hit : hit + bytes.Length;
+                }
+                var head = $"[{l.Name}: {found} match{(found == 1 ? "" : "es")} for \"{needle}\", {(backwards ? "newest first" : "oldest first")}, in {start} to {end}" +
+                           (next >= 0 ? $"; more: from={next}" : "; no more") + "]\n";
+                return Ok(head + sb.ToString());
             }
             case "serial_send":
             {

@@ -46,11 +46,12 @@ public sealed class Line
     public readonly SemaphoreSlim Conversation = new(1, 1);
     public string ConversationHolder = "";
 
-    const int KeepBytes = 16 << 20;
     readonly object _gate = new();
-    byte[] _buf = new byte[1 << 16];
-    int _count;         // bytes held in _buf
-    long _base;         // absolute offset of _buf[0]
+    /// Everything received, up to SerialHistoryMiB; see History.
+    readonly History _history = new((long)Math.Max(16, Bench.Config.SerialHistoryMiB) << 20);
+    /// The most one read or wait hands back; anything older is left for
+    /// serial_history, with a note saying where.
+    public const int Most = 1 << 20;
     SerialPort? _port;
     FileStream? _log;
 
@@ -68,7 +69,10 @@ public sealed class Line
     }
 
     public bool IsOpen => _port?.IsOpen == true;
-    public long End { get { lock (_gate) return _base + _count; } }
+    public long End { get { lock (_gate) return _history.End; } }
+    /// The oldest position still held.
+    public long Start { get { lock (_gate) return _history.Start; } }
+    public long Capacity => _history.Capacity;
     public string LogPath => Path.Combine(Bench.Dir, $"serial-{Name}.log");
 
     public string Describe() => $"{Name} {Settings}{(IsOpen ? " open" : " closed")}";
@@ -185,27 +189,33 @@ public sealed class Line
     {
         lock (_gate)
         {
-            if (_count + data.Length > _buf.Length)
-            {
-                if (_count + data.Length > KeepBytes)
-                {
-                    int drop = _count + data.Length - KeepBytes / 2;
-                    drop = Math.Min(drop, _count);
-                    Buffer.BlockCopy(_buf, drop, _buf, 0, _count - drop);
-                    _count -= drop;
-                    _base += drop;
-                }
-                if (_count + data.Length > _buf.Length)
-                {
-                    var bigger = new byte[Math.Max(_buf.Length * 2, _count + data.Length)];
-                    Buffer.BlockCopy(_buf, 0, bigger, 0, _count);
-                    _buf = bigger;
-                }
-            }
-            Buffer.BlockCopy(data, 0, _buf, _count, data.Length);
-            _count += data.Length;
+            _history.Append(data, DateTime.Now);
             Monitor.PulseAll(_gate);
         }
+    }
+
+    /// The bytes from `from` to `to`; past Most, only the newest Most, after
+    /// a note of what was left out and where to page back to it.
+    byte[] Capped(long from, long to)
+    {
+        from = Math.Max(from, _history.Start);
+        if (to - from <= Most) return _history.Read(from, to);
+        long cut = to - Most;
+        var note = System.Text.Encoding.Latin1.GetBytes(
+            $"[{cut - from} earlier bytes left out: serial_history from={from} pages through them]\n");
+        return note.Concat(_history.Read(cut, to)).ToArray();
+    }
+
+    /// Bytes from `from` to `to` exactly, as held (for serial_history).
+    public byte[] Read(long from, long to) { lock (_gate) return _history.Read(from, to); }
+
+    /// Roughly when the byte at `at` arrived.
+    public DateTime? When(long at) { lock (_gate) return _history.When(at); }
+
+    /// Where `needle` next (or, backwards, last) appears in what is held.
+    public long Find(long from, long to, byte[] needle, bool backwards)
+    {
+        lock (_gate) return backwards ? _history.FindLast(from, to, needle) : _history.Find(from, to, needle);
     }
 
     /// <summary>Sends bytes; `who` is written to the log beside them.</summary>
@@ -229,14 +239,13 @@ public sealed class Line
         p.BreakState = false;
     }
 
-    /// <summary>What arrived from `from` on; `from` is moved to the end. Bytes dropped from the buffer are skipped.</summary>
+    /// <summary>What arrived from `from` on (the newest Most of it at most); `from` is moved to the end.</summary>
     public byte[] Take(ref long from)
     {
         lock (_gate)
         {
-            long start = Math.Max(from, _base);
-            var outp = _buf.AsSpan((int)(start - _base), (int)(_base + _count - start)).ToArray();
-            from = _base + _count;
+            var outp = Capped(from, _history.End);
+            from = _history.End;
             return outp;
         }
     }
@@ -247,22 +256,24 @@ public sealed class Line
         var end = DateTime.UtcNow + time;
         lock (_gate)
         {
+            long searched = Math.Max(from, _history.Start);  // no match starts before this
             while (true)
             {
-                long start = Math.Max(from, _base);
-                var have = _buf.AsSpan((int)(start - _base), (int)(_base + _count - start));
-                int at = have.IndexOf(needle);
+                long start = Math.Max(from, _history.Start);
+                searched = Math.Max(searched, start);
+                // ONLY WHAT IS NEW is searched each time round.
+                long at = _history.Find(searched, _history.End, needle);
                 if (at >= 0)
                 {
-                    var outp = have[..(at + needle.Length)].ToArray();
-                    from = start + at + needle.Length;
-                    return (true, outp);
+                    from = at + needle.Length;
+                    return (true, Capped(start, from));
                 }
+                searched = Math.Max(start, _history.End - needle.Length + 1);
                 var left = end - DateTime.UtcNow;
                 if (left <= TimeSpan.Zero || cancel.IsCancellationRequested)
                 {
-                    from = _base + _count;
-                    return (false, have.ToArray());
+                    from = _history.End;
+                    return (false, Capped(start, from));
                 }
                 Monitor.Wait(_gate, left < TimeSpan.FromMilliseconds(500) ? left : TimeSpan.FromMilliseconds(500));
             }
@@ -271,10 +282,6 @@ public sealed class Line
 
     public byte[] Tail(int chars)
     {
-        lock (_gate)
-        {
-            int n = Math.Min(chars, _count);
-            return _buf.AsSpan(_count - n, n).ToArray();
-        }
+        lock (_gate) return _history.Read(_history.End - Math.Clamp(chars, 0, Most), _history.End);
     }
 }
