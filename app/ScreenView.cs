@@ -534,6 +534,8 @@ public sealed class ScreenView : Control
                 items.Add(new ToolStripMenuItem(c.Text + (c.FitsSync ? "" : "   (other sync polarity)") + (c.Refused ? "   (the card refused it)" : "") +
                                                 (c.Smear is { } s ? $"   smear {s:0.00}" : ""), null, (_, _) => Timing(c.Spec))
                     { Checked = c.Current, Font = c.Current && timings.ByHand ? new Font(m.Font, FontStyle.Bold) : m.Font });
+            items.Add(new ToolStripSeparator());
+            items.Add(Sub("Recent events", _native.Events.TakeLast(20).Reverse().Select(e => (ToolStripItem)new ToolStripMenuItem(e) { Enabled = false }).ToArray()));
             m.Items.Add(Sub("Analog timing", items.ToArray()));
         }
         m.Items.Add(Sub("Shape",

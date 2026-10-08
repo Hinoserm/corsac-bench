@@ -65,6 +65,21 @@ public abstract class VideoSource
     /// For an analog input: the sync coming in and the timings that fit it; null otherwise.
     public volatile TimingReport? Timings;
 
+    // What happened to the signal and when, newest last: why a picture
+    // flickered, and how long a new mode took to show.
+    readonly Queue<string> _events = new();
+
+    public void Note(string what)
+    {
+        lock (_events)
+        {
+            _events.Enqueue($"{DateTime.Now:HH:mm:ss.fff}  {what}");
+            while (_events.Count > 80) _events.Dequeue();
+        }
+    }
+
+    public string[] Events { get { lock (_events) return _events.ToArray(); } }
+
     /// Chooses the timing for the sync now coming in by hand; null goes back to automatic.
     public virtual string SetTiming(string? spec) => throw new InvalidOperationException(Device + " has no timings to choose between");
     public double SignalHz, Fps, CaptureLatencyMs = -1;

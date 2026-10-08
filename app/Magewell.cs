@@ -293,6 +293,8 @@ public sealed class MagewellSource : VideoSource
     void Session()
     {
         _reopen = false;
+        long opening = Stopwatch.GetTimestamp();
+        static double Ms(long since) => (Stopwatch.GetTimestamp() - since) * 1000.0 / Stopwatch.Frequency;
         IntPtr channel = MW.MWOpenChannelByPath(_path);
         if (channel == IntPtr.Zero) throw new InvalidOperationException("could not open the Magewell channel");
         Judgement? judge;
@@ -320,6 +322,16 @@ public sealed class MagewellSource : VideoSource
             CaptureLatencyMs = -1;
             SignalHz = locked && signal.dwFrameDuration > 0 ? (Interlaced ? 20_000_000.0 : 10_000_000.0) / signal.dwFrameDuration : 0;
             Error = locked ? "" : signal.state == MW.SignalState.None ? "no signal" : $"signal {signal.state.ToString().ToLowerInvariant()}";
+            if (!locked)
+            {
+                if (_unlockedAt == 0) _unlockedAt = Stopwatch.GetTimestamp();
+                Note(Error);
+            }
+            else
+            {
+                Note($"locked {signal.cx}x{signal.cy} {SignalHz:0.##} Hz" + (_unlockedAt != 0 ? $", {Ms(_unlockedAt):0} ms after the lock was lost" : ""));
+                _unlockedAt = 0;
+            }
 
             // AN ANALOG INPUT CARRIES NO PIXEL CLOCK, and one sync fits several
             // timings. The card lists them. Which is right:
@@ -352,18 +364,23 @@ public sealed class MagewellSource : VideoSource
                     if (judge.Best == judge.Asked) judge.Best = -1;
                 }
                 judge.Asked = -1;
+                // Each opening is judged on its own frames.
+                judge.Evidence.Clear();
+                judge.Skipped = 0;
 
                 Settings.Timings.TryGetValue(key, out string? manual);
                 int chosen = manual == null ? -1 : candidates.FindIndex(t => t.Spec == manual);
                 judge.Manual = chosen >= 0 && judge.Scores[chosen] != double.MaxValue;
                 int wanted = judge.Manual ? chosen
                     : judge.Best >= 0 ? judge.Best
+                    : judge.Undecided ? judge.First
                     : judge.Eligible.Contains(judge.Current) ? judge.Current
-                    : judge.Eligible.FirstOrDefault(i => judge.Scores[i] != double.MaxValue, judge.Current);
+                    : judge.First;
                 if (wanted != judge.Current && SetTiming(channel, judge, wanted)) return;
                 how = judge.Manual ? "chosen by hand"
                     : manual != null && chosen >= 0 ? "the card refused the timing chosen by hand; automatic"
                     : judge.Eligible.Count <= 1 ? "the only timing of this sync's polarity"
+                    : judge.Undecided ? $"the card's first choice; the {judge.Eligible.Count} timings score alike"
                     : judge.Best == judge.Current ? $"sharpest of {judge.Eligible.Count}" : $"judging {judge.Eligible.Count}";
                 Report(key, judge);
             }
@@ -385,6 +402,11 @@ public sealed class MagewellSource : VideoSource
             notify = MW.MWRegisterNotify(channel, notifyEvent, MW.NotifyVideoFrameBuffering | MW.NotifyVideoSignalChange
                 | MW.NotifyInputSpecificChange | MW.NotifyVideoInputSourceChange);
             if (notify == 0) throw new InvalidOperationException("the card would not take a notification");
+            Note($"capturing {w}x{h}, {Ms(opening):0} ms after starting to open the channel");
+            // A lock gained between reading the status and asking to be told
+            // of changes would otherwise wait for the next poll.
+            if (!locked) { MW.MWGetVideoSignalStatus(channel, ref signal); if (signal.state == MW.SignalState.Locked) return; }
+            bool first = true;
 
             long count = 0;
             var measured = Stopwatch.StartNew();
@@ -401,15 +423,22 @@ public sealed class MagewellSource : VideoSource
                 {
                     // Another input, or the card read the analog line another way.
                     var (_, t, sy) = MW.InputStatus(channel);
-                    if (t != timing || sy.Key != sync.Key) return;
+                    if (t != timing || sy.Key != sync.Key) { Note($"the card reports another timing or sync: {t?.Spec ?? "none"}, {sy.Key}"); return; }
                 }
                 if ((status & MW.NotifyVideoSignalChange) != 0)
                 {
                     // A NEW MODE: opened again at its size (when following the signal).
                     var now = new MW.SignalStatus();
                     MW.MWGetVideoSignalStatus(channel, ref now);
-                    if (now.state != signal.state || now.cx != signal.cx || now.cy != signal.cy || now.dwFrameDuration != signal.dwFrameDuration || now.bInterlaced != signal.bInterlaced)
+                    // The frame time is a measurement and wanders by a count or
+                    // two; only a real difference (half a percent) is a new mode.
+                    bool rate = Math.Abs((long)now.dwFrameDuration - signal.dwFrameDuration) > signal.dwFrameDuration / 200;
+                    if (now.state != signal.state || now.cx != signal.cx || now.cy != signal.cy || rate || now.bInterlaced != signal.bInterlaced)
+                    {
+                        Note($"signal changed: {now.state.ToString().ToLowerInvariant()} {now.cx}x{now.cy}");
+                        if (now.state != MW.SignalState.Locked && _unlockedAt == 0) _unlockedAt = Stopwatch.GetTimestamp();
                         return;
+                    }
                 }
                 if ((status & MW.NotifyVideoFrameBuffering) == 0 || !locked) continue;
 
@@ -462,15 +491,18 @@ public sealed class MagewellSource : VideoSource
                 }
                 _previous = Latest;
                 Publish(frame);
+                if (first) { first = false; Note($"first frame {Ms(opening):0} ms after starting to open the channel"); }
                 if (judge != null && !judge.Manual && judge.Eligible.Count > 1 && Settings.CaptureW == 0 && !Interlaced && Judge(channel, judge, frame)) return;
             }
         }
         finally
         {
+            long closing = Stopwatch.GetTimestamp();
             if (notify != 0) MW.MWUnregisterNotify(channel, notify);
             if (capturing) MW.MWStopVideoCapture(channel);
             foreach (var f in pinned) MW.MWUnpinVideoBuffer(channel, f.Address);
             MW.MWCloseChannel(channel);
+            Note($"channel closed in {Ms(closing):0} ms");
             CloseHandle(captureEvent);
             CloseHandle(notifyEvent);
         }
@@ -478,6 +510,7 @@ public sealed class MagewellSource : VideoSource
 
     long FramesAtMeasure;
     VideoFrame? _previous;
+    long _unlockedAt;       // when the lock was lost, until it is found again
 
     // ---- which analog timing ------------------------------------------------
 
@@ -500,9 +533,20 @@ public sealed class MagewellSource : VideoSource
         public int Current = -1, Best = -1, Asked = -1;
         /// The timing in use was chosen by hand: nothing is judged.
         public bool Manual;
+        /// Every timing was tried and none was clearly the sharpest: the
+        /// card's first choice stands, and nothing more is judged for this
+        /// sync until Automatic is chosen again.
+        public bool Undecided;
+        /// Looks in a row that found a settled timing smeared.
+        public int Smeary;
+        /// While a settled timing is judged again: the timing it was.
+        public int Incumbent = -1;
+        /// Frames passed over since the timing was last asked for.
+        public int Skipped;
+        /// The card's own first choice among those in the running.
+        public int First => Eligible.FirstOrDefault(i => Scores[i] != double.MaxValue, Eligible[0]);
         public double BestScore;
         public readonly List<double> Evidence = new();
-        public long MeasuredAt;
     }
 
     readonly Dictionary<string, Judgement> _judgements = new();
@@ -518,27 +562,41 @@ public sealed class MagewellSource : VideoSource
     /// timing was changed and the channel must be opened again.
     bool Judge(IntPtr channel, Judgement j, VideoFrame f)
     {
-        long now = Environment.TickCount64;
-        if (now - j.MeasuredAt < 200) return false;
-        j.MeasuredAt = now;
+        if (j.Undecided || !j.Eligible.Contains(j.Current)) return false;
+        bool settled = j.Best >= 0 && j.Best == j.Current;
+        // EVERY FRAME COUNTS, as fast as they come (a look costs a fraction
+        // of a millisecond): a timing being judged is decided on three
+        // consecutive frames, after the first two, which may straddle the
+        // change of timing; a settled one is watched five frames at a time.
+        // The card answers a change of timing within a frame or two, so
+        // nothing is gained by waiting longer.
+        if (!settled && ++j.Skipped <= 2) return false;
         var (score, edges) = Smear(f);
         if (edges < MinEdges) return false;           // a blank or flat screen says nothing
         j.Evidence.Add(score);
-        if (j.Evidence.Count < 3) return false;
+        if (j.Evidence.Count < (settled ? 5 : 3)) return false;
         double mean = j.Evidence.Average();
         j.Evidence.Clear();
 
-        if (!j.Eligible.Contains(j.Current)) return false;
-        if (j.Best >= 0 && j.Best == j.Current)
+        if (settled)
         {
-            // Settled; but the machine may have changed mode inside the same
-            // sync (text to graphics). Judged afresh if the picture smears.
-            if (mean <= Math.Max(Smeared, j.BestScore * 1.5 + 0.03)) { j.BestScore = Math.Min(j.BestScore, mean); return false; }
-            Array.Clear(j.Scores);
+            // SETTLED. Changing the timing means opening the channel again,
+            // a black flash of a few frames, so it is judged afresh only when
+            // the picture has plainly gone from sharp to smeared (the machine
+            // changed width inside the same sync, which the card cannot
+            // see) and stays so for two looks: ten frames, a seventh of a
+            // second.
+            if (mean <= Math.Max(Smeared, j.BestScore * 2)) { j.Smeary = 0; return false; }
+            if (++j.Smeary < 2) return false;
+            Note($"{j.Candidates[j.Current].Spec} was sharp ({j.BestScore:0.00}) and now smears ({mean:0.00}): judging again");
+            j.Smeary = 0;
+            j.Incumbent = j.Current;
+            for (int i = 0; i < j.Scores.Length; i++) if (j.Scores[i] != double.MaxValue) j.Scores[i] = null;
             j.Best = -1;
         }
 
         j.Scores[j.Current] = mean;
+        Note($"{j.Candidates[j.Current].Spec} smear {mean:0.00}");
         if (mean < Crisp) { Settle(j, j.Current, mean); return false; }
         // Only timings of the measured polarity are tried: the others have
         // the wrong number of lines however sharp they look.
@@ -546,15 +604,42 @@ public sealed class MagewellSource : VideoSource
         if (next >= 0) return SetTiming(channel, j, next);
         var tried = j.Eligible.Where(i => j.Scores[i] != double.MaxValue).ToList();
         if (tried.Count == 0) return false;
-        int best = tried.MinBy(i => j.Scores[i]!.Value);
-        Settle(j, best, j.Scores[best]!.Value);
-        return best != j.Current && SetTiming(channel, j, best);
+        // THE ONE TO BEAT: the timing that was settled before, if this is a
+        // second judging; otherwise the card's own first choice.
+        int best = tried.MinBy(i => j.Scores[i]!.Value), first = j.Incumbent >= 0 && tried.Contains(j.Incumbent) ? j.Incumbent : j.First;
+        double b = j.Scores[best]!.Value, f0 = j.Scores[first] ?? double.MaxValue;
+        bool again = j.Incumbent >= 0;
+        j.Incumbent = -1;
+        // ONLY A CLEAR WINNER displaces it: well under its smear, not a
+        // hair under it. Timings that score alike say the picture cannot
+        // tell them apart, and flipping between them on a hair's difference
+        // is the flicker this replaces.
+        if (best == first || (b <= f0 * 0.6 && f0 - b >= 0.05))
+        {
+            Settle(j, best, b);
+            return best != j.Current && SetTiming(channel, j, best);
+        }
+        if (again)
+        {
+            // It was right before and nothing now says otherwise: it stays,
+            // and its new score is the mark it must smear well past.
+            Note($"no clear winner ({string.Join(", ", tried.Select(i => $"{j.Candidates[i].Spec} {j.Scores[i]:0.00}"))}): keeping {j.Candidates[first].Spec}");
+            Settle(j, first, f0);
+            return first != j.Current && SetTiming(channel, j, first);
+        }
+        j.Undecided = true;
+        j.Best = -1;
+        Note($"no clear winner ({string.Join(", ", tried.Select(i => $"{j.Candidates[i].Spec} {j.Scores[i]:0.00}"))}): staying with the card's first choice {j.Candidates[first].Spec}");
+        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[first]}, sync {j.Sync.Key}, the card's first choice; the {j.Eligible.Count} timings score alike";
+        Report(j.Sync.Key, j);
+        return first != j.Current && SetTiming(channel, j, first);
     }
 
     void Settle(Judgement j, int best, double score)
     {
         j.Best = best;
         j.BestScore = score;
+        Note($"settled on {j.Candidates[best].Spec} (smear {score:0.00})");
         TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[best]}, sync {j.Sync.Key}, sharpest of {j.Eligible.Count}";
         Report(j.Sync.Key, j);
     }
@@ -599,7 +684,9 @@ public sealed class MagewellSource : VideoSource
         var t = j.Candidates[i];
         if (MW.MWSetVideoTiming(channel, ref t) != MW.Result.Succeeded) { j.Scores[i] = double.MaxValue; return false; }
         j.Asked = i;
+        j.Skipped = 0;
         j.Evidence.Clear();
+        Note($"asked the card for {t.Spec}");
         return true;
     }
 

@@ -528,7 +528,8 @@ public static class Bench
                         sb.Append($"  {i + 1}: {ch.Spec}  {ch.Text}{(ch.Current ? "  <- in use" : "")}{(ch.FitsSync ? "" : "  (other sync polarity: wrong number of lines unless the card misreads the sync)")}" +
                                   $"{(ch.Refused ? "  (the card refused it)" : "")}{(ch.Smear is { } s ? $"  smear {s:0.00}" : "")}\n");
                     }
-                    sb.Append("set: a number above, WIDTHxHEIGHT or WIDTHxHEIGHT/PERLINE to choose by hand; auto to go back. vga_capture shows the result.");
+                    sb.Append("set: a number above, WIDTHxHEIGHT or WIDTHxHEIGHT/PERLINE to choose by hand; auto to go back. vga_capture shows the result.\nrecent events:\n");
+                    foreach (var e in native.Events.TakeLast(30)) sb.Append("  " + e + "\n");
                     return Ok(sb.ToString());
                 }
                 finally { VideoSource.Release(native, 10000); }
