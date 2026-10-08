@@ -99,12 +99,17 @@ its low-latency mode:
 - frames always arrive at the input's own resolution; a mode change reopens
   the channel at the new size the moment the card reports it
 - analog inputs carry no pixel clock, so one sync can fit several timings
-  (720x400 text and 640x400 graphics are the same sync). The card lists
-  every timing that fits, at any resolution the card supports, and the bench
-  tries them and keeps the one whose pixels come out crisp. Sampling at the
-  wrong clock smears pixel edges between samples, and the bench measures
-  that on the live picture. It remembers the choice for each sync, and judges
-  again if the machine changes mode within the same sync.
+  (720x400 and 640x400 are the same sync, and so are 640x350 and 720x350).
+  The card lists every timing that fits, at any resolution it supports:
+  - the number of lines comes from the sync polarities the card measures,
+    which is how a VGA card states it, so only timings of that polarity are
+    in the running
+  - the width comes from the picture: the bench tries the timings left and
+    keeps the one whose pixel edges smear least, remembers it for that sync,
+    and judges again if the picture starts to smear
+  - you can choose by hand instead: right-click the picture, *Analog
+    timing*, or `vga_timing` from a session. The choice is kept per sync in
+    `bench.json` across restarts, and *Automatic* undoes it.
 - the information bar shows the signal's refresh rate, the analog timing in
   use, the capture rate, the
   card's own latency (the frame's first line on the wire to the whole frame
@@ -178,6 +183,7 @@ directly. `http://127.0.0.1:7825/status` is a plain-text summary.
 | `serial_record_start` / `_stop` / `_list` | record ports to files |
 | `bench_clients` | the connected sessions and what each is doing |
 | `vga_devices` / `vga_select` / `vga_capture` | the capture devices, and a frame from one |
+| `vga_timing` | how a Magewell analog input reads the line: the sync it measures, every timing that fits, which is in use; choose one by hand, or go back to automatic |
 | `vga_capture_series` | frames taken evenly over a span of time, in one image in time order, each timed beneath; several can run at once alongside every other tool |
 
 ## Settings
