@@ -104,9 +104,14 @@ its low-latency mode:
   - the number of lines comes from the sync polarities the card measures,
     which is how a VGA card states it, so only timings of that polarity are
     in the running
-  - the width comes from the picture: the bench tries the timings left and
-    keeps the one whose pixel edges smear least, remembers it for that sync,
-    and judges again if the picture starts to smear
+  - the width comes from the picture. A wrong sampling clock smears pixel
+    edges in an exact repeating pattern across the line, and the bench
+    tries another timing only when the smear has that timing's pattern. A
+    film, a game or a scaled picture is soft everywhere and never sets it
+    off. A trial takes about a fifth of a second, and the choice is
+    remembered for that sync.
+  - `vga_timing` and *Analog timing > Recent events* log every lock, trial
+    and verdict with its time
   - you can choose by hand instead: right-click the picture, *Analog
     timing*, or `vga_timing` from a session. The choice is kept per sync in
     `bench.json` across restarts, and *Automatic* undoes it.
