@@ -132,14 +132,7 @@ public sealed class ScreensForm : Form
         W.X = Left; W.Y = Top; W.W = Width; W.H = Height;
     }
 
-    static ScreenSettings SettingsFor(string device)
-    {
-        lock (Bench.Config.Screens)
-        {
-            if (!Bench.Config.Screens.TryGetValue(device, out var s)) Bench.Config.Screens[device] = s = new ScreenSettings();
-            return s;
-        }
-    }
+    static ScreenSettings SettingsFor(string device) => Bench.ScreenSettingsFor(device);
 
     new void Refresh()
     {

@@ -51,6 +51,12 @@ public sealed class ScreenSettings
     public bool ShowInfo { get; set; } = true;
     /// <summary>For devices with a native low-latency source: how frames meet the display.</summary>
     public ScreenPresent Present { get; set; } = ScreenPresent.LowestLatency;
+    /// <summary>
+    /// Analog timings chosen by hand, per sync: "H- V+, 449 lines, 70 Hz" to
+    /// "720x400/900" (width x height / samples per line). A sync not listed
+    /// is automatic.
+    /// </summary>
+    public Dictionary<string, string> Timings { get; set; } = new();
 }
 
 /// <summary>One screens window: which devices it shows, how, and where it was.</summary>
@@ -478,6 +484,14 @@ public sealed class ScreenView : Control
         }
     }
 
+    /// <summary>Chooses the analog timing by hand (null: automatic) for the sync coming in.</summary>
+    void Timing(string? spec)
+    {
+        try { _native!.SetTiming(spec); _error = ""; }
+        catch (Exception e) { _error = e.Message; }
+        Invalidate();
+    }
+
     /// <summary>A setting changed: save it and show the picture afresh.</summary>
     void Apply(Action a)
     {
@@ -507,6 +521,21 @@ public sealed class ScreenView : Control
         catch (Exception e) { sizes.Add(new ToolStripMenuItem(e.Message) { Enabled = false }); }
 
         m.Items.Add(Sub("Capture size", sizes.ToArray()));
+        if (_native?.Timings is { } timings)
+        {
+            // WHICH WAY THE ANALOG LINE IS READ, for the sync coming in now.
+            var items = new List<ToolStripItem>
+            {
+                new ToolStripMenuItem($"Sync: {timings.Sync}") { Enabled = false },
+                new ToolStripMenuItem("Automatic (lines from the sync polarity, width from the sharpest picture)", null, (_, _) => Timing(null)) { Checked = !timings.ByHand },
+                new ToolStripSeparator(),
+            };
+            foreach (var c in timings.Choices)
+                items.Add(new ToolStripMenuItem(c.Text + (c.FitsSync ? "" : "   (other sync polarity)") + (c.Refused ? "   (the card refused it)" : "") +
+                                                (c.Smear is { } s ? $"   smear {s:0.00}" : ""), null, (_, _) => Timing(c.Spec))
+                    { Checked = c.Current, Font = c.Current && timings.ByHand ? new Font(m.Font, FontStyle.Bold) : m.Font });
+            m.Items.Add(Sub("Analog timing", items.ToArray()));
+        }
         m.Items.Add(Sub("Shape",
             Item("Like a monitor (the aspect the card reports for the signal)", S.Aspect == ScreenAspect.Monitor, () => S.Aspect = ScreenAspect.Monitor),
             Item("Square pixels (as captured)", S.Aspect == ScreenAspect.Pixels, () => S.Aspect = ScreenAspect.Pixels),

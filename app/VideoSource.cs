@@ -43,6 +43,13 @@ public sealed class VideoFrame
     }
 }
 
+/// One timing that fits a sync. Refused: the card would not use it.
+/// Smear: what the picture scored with it (low is sharp), when tried.
+public sealed record TimingChoice(string Spec, string Text, bool Current, bool FitsSync, bool Refused, double? Smear);
+
+/// An analog sync and its timings; ByHand when the one in use was chosen, not judged.
+public sealed record TimingReport(string Sync, bool ByHand, List<TimingChoice> Choices);
+
 public abstract class VideoSource
 {
     public readonly string Device;
@@ -55,6 +62,11 @@ public abstract class VideoSource
     /// The input's kind and, for analog inputs, the timing it is read with.
     public MW.InputType InputKind;
     public volatile string TimingText = "";
+    /// For an analog input: the sync coming in and the timings that fit it; null otherwise.
+    public volatile TimingReport? Timings;
+
+    /// Chooses the timing for the sync now coming in by hand; null goes back to automatic.
+    public virtual string SetTiming(string? spec) => throw new InvalidOperationException(Device + " has no timings to choose between");
     public double SignalHz, Fps, CaptureLatencyMs = -1;
     VideoFrame? _latest, _current;
     long _seq;
@@ -154,7 +166,7 @@ public abstract class VideoSource
                 s = new MagewellSource(device, path);
                 Sources[device] = s;
             }
-            if (settings != null) s.Settings = settings;
+            s.Settings = settings ?? Bench.ScreenSettingsFor(device);
             s.Users++;
             s.Start();
             return s;

@@ -41,6 +41,8 @@ public static class MW
 
         public int HTotal => wHActive + wHFrontPorch + wHSyncWidth + wHBackPorch;
         public override string ToString() => $"{wHActive}x{wVActive} ({HTotal} per line, {dwPixelClock / 1e6:0.###} MHz)";
+        /// How a setting or a tool names this timing.
+        public string Spec => $"{wHActive}x{wVActive}/{HTotal}";
     }
 
     /// MWCAP_VIDEO_TIMING_ARRAY (MWUSBCaptureExtension.h).
@@ -55,13 +57,29 @@ public static class MW
     /// dwVideoInputType; then a union whose VGA/component member is
     /// MWCAP_COMPONENT_SPECIFIC_STATUS: MWCAP_VIDEO_SYNC_INFO (12 bytes),
     /// BOOLEAN bTriLevelSync, MWCAP_VIDEO_TIMING videoTiming (at byte 18).
-    public static (InputType type, Timing? timing) InputStatus(IntPtr channel)
+    public static (InputType type, Timing? timing, Sync sync) InputStatus(IntPtr channel)
     {
         var raw = new byte[1024];
-        if (MWGetInputSpecificStatus(channel, raw) != Result.Succeeded || raw[0] == 0) return (InputType.None, null);
+        if (MWGetInputSpecificStatus(channel, raw) != Result.Succeeded || raw[0] == 0) return (InputType.None, null, default);
         var type = (InputType)BitConverter.ToUInt32(raw, 1);
-        if ((type & (InputType.Vga | InputType.Component)) == 0) return (type, null);
-        return (type, MemoryMarshal.Read<Timing>(raw.AsSpan(18)));
+        if ((type & (InputType.Vga | InputType.Component)) == 0) return (type, null, default);
+        return (type, MemoryMarshal.Read<Timing>(raw.AsSpan(18)), MemoryMarshal.Read<Sync>(raw.AsSpan(5)));
+    }
+
+    /// MWCAP_VIDEO_SYNC_INFO: the sync as the card MEASURES it, whatever
+    /// timing it is told to read the line with.
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public record struct Sync
+    {
+        public byte bySyncType, bHSPolarity, bVSPolarity, bInterlaced;
+        public uint dwFrameDuration;
+        public ushort wVSyncLineCount, wFrameLineCount;
+
+        public double Hz => dwFrameDuration > 0 ? (bInterlaced != 0 ? 2e7 : 1e7) / dwFrameDuration : 0;
+        /// What names this sync: a VGA card says how many lines a mode has
+        /// by its sync polarities (350: H+ V-, 400: H- V+, 480: H- V-).
+        public string Key => $"H{(bHSPolarity != 0 ? '+' : '-')} V{(bVSPolarity != 0 ? '+' : '-')}{(bInterlaced != 0 ? " interlaced" : "")}, {wFrameLineCount} lines, {Math.Round(Hz)} Hz";
+        public bool Fits(Timing t) => (t.bHSPolarity != 0) == (bHSPolarity != 0) && (t.bVSPolarity != 0) == (bVSPolarity != 0);
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1, CharSet = CharSet.Ansi)]
@@ -303,39 +321,54 @@ public sealed class MagewellSource : VideoSource
             SignalHz = locked && signal.dwFrameDuration > 0 ? (Interlaced ? 20_000_000.0 : 10_000_000.0) / signal.dwFrameDuration : 0;
             Error = locked ? "" : signal.state == MW.SignalState.None ? "no signal" : $"signal {signal.state.ToString().ToLowerInvariant()}";
 
-            // AN ANALOG INPUT CARRIES NO PIXEL CLOCK. Where several standard
-            // timings fit the same sync (720x400 text and 640x400 graphics,
-            // and their like at every resolution), the card lists them and
-            // the picture says which is right: see Judge.
-            var (inputType, timing) = MW.InputStatus(channel);
+            // AN ANALOG INPUT CARRIES NO PIXEL CLOCK, and one sync fits several
+            // timings. The card lists them. Which is right:
+            //  - the number of lines comes from the sync polarities the card
+            //    measures (a VGA card's own way of saying it), so only
+            //    timings of that polarity are in the running;
+            //  - the width comes from the picture (see Judge), starting from
+            //    the card's own first choice;
+            //  - or the person, or a session, has said which (Timings in the
+            //    device's settings), and that is that.
+            var (inputType, timing, sync) = MW.InputStatus(channel);
             InputKind = inputType;
             judge = null;
+            string how = "";
             if (locked && timing != null)
             {
                 var list = new MW.TimingArray { aTimings = new MW.Timing[8] };
-                if (MW.MWGetPreferredVideoTimings(channel, ref list) == MW.Result.Succeeded)
+                var candidates = MW.MWGetPreferredVideoTimings(channel, ref list) == MW.Result.Succeeded
+                    ? list.aTimings.Take(Math.Min((int)list.byNumTimings, 8)).Distinct().ToList() : new List<MW.Timing>();
+                if (!candidates.Contains(timing.Value)) candidates.Add(timing.Value);
+                string key = sync.Key;
+                lock (_judgements)
+                    if (!_judgements.TryGetValue(key, out judge) || !judge.Candidates.SequenceEqual(candidates))
+                        _judgements[key] = judge = new Judgement(candidates, sync);
+                judge.Current = candidates.IndexOf(timing.Value);
+                if (judge.Asked >= 0 && judge.Asked != judge.Current)
                 {
-                    var candidates = list.aTimings.Take(Math.Min((int)list.byNumTimings, 8)).Distinct().ToList();
-                    if (!candidates.Contains(timing.Value)) candidates.Insert(0, timing.Value);
-                    if (candidates.Count > 1)
-                    {
-                        string key = string.Join("|", candidates.OrderBy(t => t.dwPixelClock).ThenBy(t => t.wHActive));
-                        if (!_judgements.TryGetValue(key, out judge)) _judgements[key] = judge = new Judgement(candidates);
-                        judge.Current = candidates.IndexOf(timing.Value);
-                        if (judge.Asked >= 0 && judge.Asked != judge.Current)
-                        {
-                            // The card would not read the line that way: never ask again.
-                            judge.Scores[judge.Asked] = double.MaxValue;
-                            if (judge.Best == judge.Asked) judge.Best = -1;
-                        }
-                        judge.Asked = -1;
-                        // A settled choice for this sync, from before: straight to it.
-                        if (judge.Best >= 0 && judge.Best != judge.Current && SetTiming(channel, judge, judge.Best)) return;
-                    }
+                    // The card would not read the line that way: never ask again.
+                    judge.Scores[judge.Asked] = double.MaxValue;
+                    if (judge.Best == judge.Asked) judge.Best = -1;
                 }
+                judge.Asked = -1;
+
+                Settings.Timings.TryGetValue(key, out string? manual);
+                int chosen = manual == null ? -1 : candidates.FindIndex(t => t.Spec == manual);
+                judge.Manual = chosen >= 0 && judge.Scores[chosen] != double.MaxValue;
+                int wanted = judge.Manual ? chosen
+                    : judge.Best >= 0 ? judge.Best
+                    : judge.Eligible.Contains(judge.Current) ? judge.Current
+                    : judge.Eligible.FirstOrDefault(i => judge.Scores[i] != double.MaxValue, judge.Current);
+                if (wanted != judge.Current && SetTiming(channel, judge, wanted)) return;
+                how = judge.Manual ? "chosen by hand"
+                    : manual != null && chosen >= 0 ? "the card refused the timing chosen by hand; automatic"
+                    : judge.Eligible.Count <= 1 ? "the only timing of this sync's polarity"
+                    : judge.Best == judge.Current ? $"sharpest of {judge.Eligible.Count}" : $"judging {judge.Eligible.Count}";
+                Report(key, judge);
             }
-            TimingText = timing == null ? "" : $"{inputType.ToString().ToUpperInvariant()} {timing}" +
-                (judge == null ? "" : judge.Best == judge.Current ? $", best of {judge.Candidates.Count}" : $", judging {judge.Candidates.Count}");
+            else Timings = null;
+            TimingText = timing == null ? "" : $"{inputType.ToString().ToUpperInvariant()} {timing}, sync {sync.Key}, {how}";
 
             // THREE PINNED BUFFERS: the card writes one while the display
             // copies from the newest complete one (or the one before it, if
@@ -367,8 +400,8 @@ public sealed class MagewellSource : VideoSource
                 if ((status & (MW.NotifyInputSpecificChange | MW.NotifyVideoInputSourceChange)) != 0)
                 {
                     // Another input, or the card read the analog line another way.
-                    var (_, t) = MW.InputStatus(channel);
-                    if (t != timing) return;
+                    var (_, t, sy) = MW.InputStatus(channel);
+                    if (t != timing || sy.Key != sync.Key) return;
                 }
                 if ((status & MW.NotifyVideoSignalChange) != 0)
                 {
@@ -429,7 +462,7 @@ public sealed class MagewellSource : VideoSource
                 }
                 _previous = Latest;
                 Publish(frame);
-                if (judge != null && Settings.CaptureW == 0 && !Interlaced && Judge(channel, judge, frame)) return;
+                if (judge != null && !judge.Manual && judge.Eligible.Count > 1 && Settings.CaptureW == 0 && !Interlaced && Judge(channel, judge, frame)) return;
             }
         }
         finally
@@ -449,11 +482,24 @@ public sealed class MagewellSource : VideoSource
     // ---- which analog timing ------------------------------------------------
 
     /// The candidate timings for one sync, and what the picture said of each.
-    sealed class Judgement(List<MW.Timing> candidates)
+    sealed class Judgement(List<MW.Timing> candidates, MW.Sync sync)
     {
         public readonly List<MW.Timing> Candidates = candidates;
+        public readonly MW.Sync Sync = sync;
+        /// The candidates in the running: those of the measured polarity
+        /// (the right number of lines); every one, if none is.
+        public readonly List<int> Eligible = InTheRunning(candidates, sync);
+
+        static List<int> InTheRunning(List<MW.Timing> candidates, MW.Sync sync)
+        {
+            var all = Enumerable.Range(0, candidates.Count).ToList();
+            var fitting = all.Where(i => sync.Fits(candidates[i])).ToList();
+            return fitting.Count > 0 ? fitting : all;
+        }
         public readonly double?[] Scores = new double?[candidates.Count];
         public int Current = -1, Best = -1, Asked = -1;
+        /// The timing in use was chosen by hand: nothing is judged.
+        public bool Manual;
         public double BestScore;
         public readonly List<double> Evidence = new();
         public long MeasuredAt;
@@ -482,6 +528,7 @@ public sealed class MagewellSource : VideoSource
         double mean = j.Evidence.Average();
         j.Evidence.Clear();
 
+        if (!j.Eligible.Contains(j.Current)) return false;
         if (j.Best >= 0 && j.Best == j.Current)
         {
             // Settled; but the machine may have changed mode inside the same
@@ -493,11 +540,13 @@ public sealed class MagewellSource : VideoSource
 
         j.Scores[j.Current] = mean;
         if (mean < Crisp) { Settle(j, j.Current, mean); return false; }
-        int next = Array.FindIndex(j.Scores, s => s == null);
-        if (next < 0 && j.Scores.All(s => s == double.MaxValue)) return false;
+        // Only timings of the measured polarity are tried: the others have
+        // the wrong number of lines however sharp they look.
+        int next = j.Eligible.FirstOrDefault(i => j.Scores[i] == null, -1);
         if (next >= 0) return SetTiming(channel, j, next);
-        int best = 0;
-        for (int i = 1; i < j.Scores.Length; i++) if (j.Scores[i] < j.Scores[best]) best = i;
+        var tried = j.Eligible.Where(i => j.Scores[i] != double.MaxValue).ToList();
+        if (tried.Count == 0) return false;
+        int best = tried.MinBy(i => j.Scores[i]!.Value);
         Settle(j, best, j.Scores[best]!.Value);
         return best != j.Current && SetTiming(channel, j, best);
     }
@@ -506,11 +555,47 @@ public sealed class MagewellSource : VideoSource
     {
         j.Best = best;
         j.BestScore = score;
-        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[best]}, best of {j.Candidates.Count}";
+        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[best]}, sync {j.Sync.Key}, sharpest of {j.Eligible.Count}";
+        Report(j.Sync.Key, j);
+    }
+
+    /// What the menu and vga_timing show: the sync, the timings that fit it and which is in use.
+    void Report(string key, Judgement j) => Timings = new TimingReport(key, j.Manual,
+        j.Candidates.Select((t, i) => new TimingChoice(t.Spec, t.ToString(), i == j.Current, j.Sync.Fits(t), j.Scores[i] == double.MaxValue,
+            j.Scores[i] is { } s && s != double.MaxValue ? s : null)).ToList());
+
+    /// A timing chosen by hand for the sync now coming in ("720x400",
+    /// "720x400/900", or its number in the list), or null for automatic.
+    /// Kept in the device's settings, per sync.
+    public override string SetTiming(string? spec)
+    {
+        var report = Timings ?? throw new InvalidOperationException("no analog signal is locked on " + Device);
+        if (spec == null)
+        {
+            var fewer = new Dictionary<string, string>(Settings.Timings);
+            fewer.Remove(report.Sync);
+            Settings.Timings = fewer;
+            // Judged afresh, from the card's first choice.
+            lock (_judgements) _judgements.Remove(report.Sync);
+        }
+        else
+        {
+            var choice = int.TryParse(spec, out int n) && n >= 1 && n <= report.Choices.Count ? report.Choices[n - 1]
+                : report.Choices.FirstOrDefault(c => c.Spec == spec) ?? report.Choices.FirstOrDefault(c => c.Spec.StartsWith(spec + "/"))
+                ?? throw new ArgumentException($"no timing \"{spec}\" fits this sync; the choices are {string.Join(", ", report.Choices.Select(c => c.Spec))}");
+            // A new dictionary each time: a session reading it, or the settings
+            // being saved, never sees it half changed.
+            Settings.Timings = new Dictionary<string, string>(Settings.Timings) { [report.Sync] = choice.Spec };
+            lock (_judgements) if (_judgements.TryGetValue(report.Sync, out var j)) { int i = report.Choices.IndexOf(choice); if (j.Scores[i] == double.MaxValue) j.Scores[i] = null; }
+        }
+        Bench.Save();
+        Reopen();
+        return report.Sync;
     }
 
     bool SetTiming(IntPtr channel, Judgement j, int i)
     {
+        if (i < 0) return false;
         var t = j.Candidates[i];
         if (MW.MWSetVideoTiming(channel, ref t) != MW.Result.Succeeded) { j.Scores[i] = double.MaxValue; return false; }
         j.Asked = i;

@@ -260,6 +260,16 @@ public static class Bench
         return d;
     }
 
+    /// <summary>A capture device's settings, made on first use.</summary>
+    public static ScreenSettings ScreenSettingsFor(string device)
+    {
+        lock (Config.Screens)
+        {
+            if (!Config.Screens.TryGetValue(device, out var s)) Config.Screens[device] = s = new ScreenSettings();
+            return s;
+        }
+    }
+
     // ---- the tools ----
 
     static JsonObject Ok(string s) => new() { ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = s }) };
@@ -484,6 +494,45 @@ public static class Bench
                 DefaultVga = Vga.Resolve(Str(a, "device") ?? throw new ArgumentException("device is required"));
                 Save();
                 return Ok("default capture device is " + DefaultVga);
+            case "vga_timing":
+            {
+                // How an analog input's line is read: see, or choose by hand.
+                var device = Vga.Resolve(Str(a, "device"));
+                var native = VideoSource.Use(device) ?? throw new InvalidOperationException(device + " has no timing control: it is not a Magewell analog input");
+                try
+                {
+                    TimingReport? Wait(Func<TimingReport?, bool> until)
+                    {
+                        var end = Environment.TickCount64 + 5000;
+                        while (!until(native.Timings) && Environment.TickCount64 < end) Thread.Sleep(50);
+                        return native.Timings;
+                    }
+                    var before = Wait(r => r != null);
+                    string note = "";
+                    if (Str(a, "set") is { Length: > 0 } set)
+                    {
+                        if (before == null) throw new InvalidOperationException(native.Error != "" ? $"{device}: {native.Error}" : $"{device}: no analog signal is locked");
+                        native.SetTiming(set.Equals("auto", StringComparison.OrdinalIgnoreCase) || set.Equals("automatic", StringComparison.OrdinalIgnoreCase) ? null : set);
+                        // The card locks again on the new timing.
+                        Wait(r => r != null && !ReferenceEquals(r, before));
+                        Thread.Sleep(300);
+                        note = $"set to {set}; ";
+                    }
+                    var t = native.Timings;
+                    if (t == null) return Ok($"{device}: {note}{(native.Error != "" ? native.Error : "no analog signal is locked")}");
+                    var sb = new StringBuilder($"{device}: {note}sync {t.Sync}; {(t.ByHand ? "timing chosen by hand (kept for this sync)" : "automatic: lines from the sync polarity, width from the sharpest picture")}; " +
+                                               $"now {native.NativeW}x{native.NativeH}, {native.SignalHz:0.##} Hz\n");
+                    for (int i = 0; i < t.Choices.Count; i++)
+                    {
+                        var ch = t.Choices[i];
+                        sb.Append($"  {i + 1}: {ch.Spec}  {ch.Text}{(ch.Current ? "  <- in use" : "")}{(ch.FitsSync ? "" : "  (other sync polarity: wrong number of lines unless the card misreads the sync)")}" +
+                                  $"{(ch.Refused ? "  (the card refused it)" : "")}{(ch.Smear is { } s ? $"  smear {s:0.00}" : "")}\n");
+                    }
+                    sb.Append("set: a number above, WIDTHxHEIGHT or WIDTHxHEIGHT/PERLINE to choose by hand; auto to go back. vga_capture shows the result.");
+                    return Ok(sb.ToString());
+                }
+                finally { VideoSource.Release(native, 10000); }
+            }
             case "vga_capture_series":
             {
                 var device = Vga.Resolve(Str(a, "device"));
