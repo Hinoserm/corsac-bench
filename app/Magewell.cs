@@ -363,9 +363,13 @@ public sealed class MagewellSource : VideoSource
                     judge.Scores[judge.Asked] = double.MaxValue;
                     if (judge.Best == judge.Asked) judge.Best = -1;
                 }
+                // A round of trials goes from one opening to the next only by
+                // way of a timing this asked for; any other opening (the machine
+                // changed mode meanwhile) ends it.
+                if (judge.Asked < 0) { judge.Home = -1; judge.ToTry.Clear(); }
                 judge.Asked = -1;
                 // Each opening is judged on its own frames.
-                judge.Evidence.Clear();
+                judge.Forget();
                 judge.Skipped = 0;
 
                 Settings.Timings.TryGetValue(key, out string? manual);
@@ -373,15 +377,13 @@ public sealed class MagewellSource : VideoSource
                 judge.Manual = chosen >= 0 && judge.Scores[chosen] != double.MaxValue;
                 int wanted = judge.Manual ? chosen
                     : judge.Best >= 0 ? judge.Best
-                    : judge.Undecided ? judge.First
                     : judge.Eligible.Contains(judge.Current) ? judge.Current
                     : judge.First;
                 if (wanted != judge.Current && SetTiming(channel, judge, wanted)) return;
                 how = judge.Manual ? "chosen by hand"
                     : manual != null && chosen >= 0 ? "the card refused the timing chosen by hand; automatic"
                     : judge.Eligible.Count <= 1 ? "the only timing of this sync's polarity"
-                    : judge.Undecided ? $"the card's first choice; the {judge.Eligible.Count} timings score alike"
-                    : judge.Best == judge.Current ? $"sharpest of {judge.Eligible.Count}" : $"judging {judge.Eligible.Count}";
+                    : judge.Best == judge.Current ? $"automatic, {judge.Eligible.Count} timings fit" : $"judging {judge.Eligible.Count}";
                 Report(key, judge);
             }
             else Timings = null;
@@ -533,106 +535,128 @@ public sealed class MagewellSource : VideoSource
         public int Current = -1, Best = -1, Asked = -1;
         /// The timing in use was chosen by hand: nothing is judged.
         public bool Manual;
-        /// Every timing was tried and none was clearly the sharpest: the
-        /// card's first choice stands, and nothing more is judged for this
-        /// sync until Automatic is chosen again.
-        public bool Undecided;
-        /// Looks in a row that found a settled timing smeared.
+        /// Looks in a row that found a settled timing smeared in another's pattern.
         public int Smeary;
-        /// While a settled timing is judged again: the timing it was.
-        public int Incumbent = -1;
-        /// Frames passed over since the timing was last asked for.
-        public int Skipped;
+        /// Frames passed over since the timing was last asked for, and frames seen while settled.
+        public int Skipped, Watched;
+        /// A ROUND OF TRIALS: the timing it started from (-1 when none is
+        /// running) and the timings still to try.
+        public int Home = -1;
+        public readonly Queue<int> ToTry = new();
+        /// When each timing last lost a round: it is not tried again for a while.
+        public readonly long[] LostAt = new long[candidates.Count];
         /// The card's own first choice among those in the running.
         public int First => Eligible.FirstOrDefault(i => Scores[i] != double.MaxValue, Eligible[0]);
         public double BestScore;
         public readonly List<double> Evidence = new();
+        /// The pattern each timing would leave, summed over the looks in Evidence.
+        public readonly double[] Pattern = new double[candidates.Count];
+
+        public void Forget() { Evidence.Clear(); Array.Clear(Pattern); }
     }
 
     readonly Dictionary<string, Judgement> _judgements = new();
 
-    /// Sampled at the right clock, a pixel edge falls between two samples;
-    /// at a wrong one, samples straddle the edges and come out between the
-    /// colours either side. On the live 720x400 text screen: 0.018 at the
-    /// right timing, 0.29 to 0.52 at any wrong one.
-    const double Crisp = 0.08, Smeared = 0.15;
-    const int MinEdges = 2000;
+    // HOW THE WIDTH IS JUDGED.
+    //
+    // Sampled at the right clock, a pixel edge falls between two samples.
+    // At a wrong one the samples drift across the pixels, and where a sample
+    // straddles an edge it comes out between the colours either side: the
+    // picture SMEARS (0.00 on a 720x400 text screen at the right timing,
+    // 0.09 to 0.32 at the wrong one).
+    //
+    // But a film, a game or a scaled picture is soft at every timing, so
+    // smear alone would have this trying timings for ever, and each try
+    // opens the channel again: a black flash of a few frames. The drift is
+    // exact, though: read at C samples a line, a picture that is really K a
+    // line smears in a PATTERN that repeats every C/|C-K| samples (every 8th
+    // or 9th for 640 against 720) and nowhere between. So the smear is
+    // counted by where in that period it falls, in eighths, and the share
+    // of it in the two worst eighths is the test. Measured:
+    //   a real 720x400 text screen read at 640x400   0.88
+    //   a picture scaled by a non-whole factor       0.28 to 0.43
+    //   film grain, sharp game texture               0.25, 0.26 (even)
+    // Another timing is tried only when the picture is not pixel-sharp AND
+    // its smear has that timing's pattern; a timing that loses a trial is
+    // left alone for a minute.
+    //
+    // Crisp is "pixel-sharp beyond question": a wrong clock has scored as
+    // low as 0.08 on a sparse text screen, the right one 0.00.
+    const double Crisp = 0.03, Patterned = 0.65;
+    const int MinEdges = 2000, Bins = 8, MinPerBin = 60;
+    const long LetAlone = 60_000;
 
-    /// One look at a complete frame (a few times a second). True when the
-    /// timing was changed and the channel must be opened again.
+    /// One look at a complete frame. True when the timing was changed and
+    /// the channel must be opened again.
     bool Judge(IntPtr channel, Judgement j, VideoFrame f)
     {
-        if (j.Undecided || !j.Eligible.Contains(j.Current)) return false;
+        if (!j.Eligible.Contains(j.Current)) return false;
         bool settled = j.Best >= 0 && j.Best == j.Current;
-        // EVERY FRAME COUNTS, as fast as they come (a look costs a fraction
-        // of a millisecond): a timing being judged is decided on three
-        // consecutive frames, after the first two, which may straddle the
-        // change of timing; a settled one is watched five frames at a time.
-        // The card answers a change of timing within a frame or two, so
-        // nothing is gained by waiting longer.
-        if (!settled && ++j.Skipped <= 2) return false;
-        var (score, edges) = Smear(f);
+        // A settled timing is watched on every third frame (a look is a
+        // fraction of a millisecond, on the thread the frames arrive on).
+        // One on trial is decided on three consecutive frames, after the
+        // first two, which may straddle the change of timing: the card
+        // answers a change within a frame or two.
+        if (settled ? ++j.Watched % 3 != 0 : ++j.Skipped <= 2) return false;
+
+        int here = j.Candidates[j.Current].HTotal;
+        var others = j.Eligible.Where(i => i != j.Current).ToArray();
+        var (score, edges, pattern) = Smear(f, here, others.Select(i => j.Candidates[i].HTotal).ToArray());
         if (edges < MinEdges) return false;           // a blank or flat screen says nothing
         j.Evidence.Add(score);
-        if (j.Evidence.Count < (settled ? 5 : 3)) return false;
+        for (int i = 0; i < others.Length; i++) j.Pattern[others[i]] += pattern[i];
+        int looks = settled ? 5 : 3;
+        if (j.Evidence.Count < looks) return false;
         double mean = j.Evidence.Average();
-        j.Evidence.Clear();
+        long now = Environment.TickCount64;
+        // The timings whose pattern the smear has, not refused and not just beaten.
+        var suspects = others.Where(i => j.Pattern[i] / looks >= Patterned && j.Scores[i] != double.MaxValue
+                                         && (j.LostAt[i] == 0 || now - j.LostAt[i] > LetAlone)).ToList();
+        string patterns = string.Join(", ", others.Select(i => $"{j.Candidates[i].Spec} {j.Pattern[i] / looks:0.00}"));
+        j.Forget();
 
         if (settled)
         {
-            // SETTLED. Changing the timing means opening the channel again,
-            // a black flash of a few frames, so it is judged afresh only when
-            // the picture has plainly gone from sharp to smeared (the machine
-            // changed width inside the same sync, which the card cannot
-            // see) and stays so for two looks: ten frames, a seventh of a
-            // second.
-            if (mean <= Math.Max(Smeared, j.BestScore * 2)) { j.Smeary = 0; return false; }
+            // SETTLED, and it stays unless the picture smears in another
+            // timing's pattern for two looks running (ten frames watched).
+            if (mean < Crisp || suspects.Count == 0) { j.Smeary = 0; return false; }
             if (++j.Smeary < 2) return false;
-            Note($"{j.Candidates[j.Current].Spec} was sharp ({j.BestScore:0.00}) and now smears ({mean:0.00}): judging again");
             j.Smeary = 0;
-            j.Incumbent = j.Current;
-            for (int i = 0; i < j.Scores.Length; i++) if (j.Scores[i] != double.MaxValue) j.Scores[i] = null;
+            Note($"{j.Candidates[j.Current].Spec} smears ({mean:0.00}) in the pattern of {string.Join(", ", suspects.Select(i => j.Candidates[i].Spec))}");
             j.Best = -1;
         }
 
         j.Scores[j.Current] = mean;
-        Note($"{j.Candidates[j.Current].Spec} smear {mean:0.00}");
-        if (mean < Crisp) { Settle(j, j.Current, mean); return false; }
-        // Only timings of the measured polarity are tried: the others have
-        // the wrong number of lines however sharp they look.
-        int next = j.Eligible.FirstOrDefault(i => j.Scores[i] == null, -1);
-        if (next >= 0) return SetTiming(channel, j, next);
-        var tried = j.Eligible.Where(i => j.Scores[i] != double.MaxValue).ToList();
-        if (tried.Count == 0) return false;
-        // THE ONE TO BEAT: the timing that was settled before, if this is a
-        // second judging; otherwise the card's own first choice.
-        int best = tried.MinBy(i => j.Scores[i]!.Value), first = j.Incumbent >= 0 && tried.Contains(j.Incumbent) ? j.Incumbent : j.First;
-        double b = j.Scores[best]!.Value, f0 = j.Scores[first] ?? double.MaxValue;
-        bool again = j.Incumbent >= 0;
-        j.Incumbent = -1;
-        // ONLY A CLEAR WINNER displaces it: well under its smear, not a
-        // hair under it. Timings that score alike say the picture cannot
-        // tell them apart, and flipping between them on a hair's difference
-        // is the flicker this replaces.
-        if (best == first || (b <= f0 * 0.6 && f0 - b >= 0.05))
+        Note($"{j.Candidates[j.Current].Spec} smear {mean:0.00} over {edges} edges; pattern of {patterns}");
+        if (j.Home < 0)
         {
-            Settle(j, best, b);
-            return best != j.Current && SetTiming(channel, j, best);
+            // A ROUND BEGINS HERE (a sync seen for the first time, or a
+            // settled timing gone wrong). With no suspect there is nothing to
+            // try: this timing stands, without a flash.
+            if (mean < Crisp || suspects.Count == 0) { Settle(j, j.Current, mean); return false; }
+            j.Home = j.Current;
+            j.ToTry.Clear();
+            foreach (int i in suspects) j.ToTry.Enqueue(i);
+            return SetTiming(channel, j, j.ToTry.Dequeue());
         }
-        if (again)
-        {
-            // It was right before and nothing now says otherwise: it stays,
-            // and its new score is the mark it must smear well past.
-            Note($"no clear winner ({string.Join(", ", tried.Select(i => $"{j.Candidates[i].Spec} {j.Scores[i]:0.00}"))}): keeping {j.Candidates[first].Spec}");
-            Settle(j, first, f0);
-            return first != j.Current && SetTiming(channel, j, first);
-        }
-        j.Undecided = true;
-        j.Best = -1;
-        Note($"no clear winner ({string.Join(", ", tried.Select(i => $"{j.Candidates[i].Spec} {j.Scores[i]:0.00}"))}): staying with the card's first choice {j.Candidates[first].Spec}");
-        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[first]}, sync {j.Sync.Key}, the card's first choice; the {j.Eligible.Count} timings score alike";
-        Report(j.Sync.Key, j);
-        return first != j.Current && SetTiming(channel, j, first);
+
+        // ON TRIAL. Pixel-sharp wins outright; otherwise the next suspect,
+        // and after the last, the verdict.
+        int home = j.Home;
+        if (mean >= Crisp && j.ToTry.Count > 0) return SetTiming(channel, j, j.ToTry.Dequeue());
+        j.Home = -1;
+        j.ToTry.Clear();
+        var tried = j.Eligible.Where(i => j.Scores[i] is { } v && v != double.MaxValue).ToList();
+        int best = tried.MinBy(i => j.Scores[i]!.Value);
+        double b = j.Scores[best]!.Value, h = j.Scores[home] ?? double.MaxValue;
+        // ONLY A CLEAR WINNER displaces the timing the round started from:
+        // well under its smear, not a hair under it.
+        int keep = best != home && b <= h * 0.6 && h - b >= 0.05 ? best : home;
+        foreach (int i in tried) if (i != keep) j.LostAt[i] = now;
+        Note(keep == home ? $"no clear winner over {j.Candidates[home].Spec} ({string.Join(", ", tried.Select(i => $"{j.Candidates[i].Spec} {j.Scores[i]:0.00}"))})"
+                          : $"{j.Candidates[keep].Spec} ({b:0.00}) is clearly sharper than {j.Candidates[home].Spec} ({h:0.00})");
+        Settle(j, keep, j.Scores[keep]!.Value);
+        return keep != j.Current && SetTiming(channel, j, keep);
     }
 
     void Settle(Judgement j, int best, double score)
@@ -640,7 +664,7 @@ public sealed class MagewellSource : VideoSource
         j.Best = best;
         j.BestScore = score;
         Note($"settled on {j.Candidates[best].Spec} (smear {score:0.00})");
-        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[best]}, sync {j.Sync.Key}, sharpest of {j.Eligible.Count}";
+        TimingText = $"{InputKind.ToString().ToUpperInvariant()} {j.Candidates[best]}, sync {j.Sync.Key}, automatic, {j.Eligible.Count} timings fit";
         Report(j.Sync.Key, j);
     }
 
@@ -685,17 +709,31 @@ public sealed class MagewellSource : VideoSource
         if (MW.MWSetVideoTiming(channel, ref t) != MW.Result.Succeeded) { j.Scores[i] = double.MaxValue; return false; }
         j.Asked = i;
         j.Skipped = 0;
-        j.Evidence.Clear();
+        j.Forget();
         Note($"asked the card for {t.Spec}");
         return true;
     }
 
     /// The share of pixel edges whose middle sample lies between the colours
-    /// either side of it, over rows spread down the frame.
-    static unsafe (double score, int edges) Smear(VideoFrame f)
+    /// either side of it, over rows spread down the frame; and, for each
+    /// other number of samples a line, how much of that smear falls in one
+    /// place in the period a clock of that rate would leave: the share of it
+    /// in the two most smeared eighths of the period (0.25 when it is even;
+    /// 0 where there are too few edges to say).
+    static unsafe (double score, int edges, double[] pattern) Smear(VideoFrame f, int here, int[] others)
     {
         int edges = 0, smeared = 0;
         int step = Math.Max(1, f.Height / 150);
+        // Where in each other clock's period every column falls.
+        var bin = new byte[others.Length][];
+        for (int k = 0; k < others.Length; k++)
+        {
+            bin[k] = new byte[f.Width];
+            double per = Math.Abs(here - others[k]) / (double)Math.Max(1, here);
+            for (int x = 0; x < f.Width; x++) bin[k][x] = (byte)((x * per % 1.0) * Bins);
+        }
+        var all = new int[others.Length, Bins];
+        var soft = new int[others.Length, Bins];
         fixed (byte* p0 = f.Pixels)
         {
             for (int y = 0; y < f.Height; y += step)
@@ -711,12 +749,34 @@ public sealed class MagewellSource : VideoSource
                     {
                         edges++;
                         int q = (hi - lo) >> 2;
-                        if (b > lo + q && b < hi - q) smeared++;
+                        bool s = b > lo + q && b < hi - q;
+                        if (s) smeared++;
+                        for (int k = 0; k < others.Length; k++)
+                        {
+                            int at = bin[k][x - 1];
+                            all[k, at]++;
+                            if (s) soft[k, at]++;
+                        }
                     }
                     a = b; b = c;
                 }
             }
         }
-        return (edges == 0 ? 0 : (double)smeared / edges, edges);
+        var pattern = new double[others.Length];
+        for (int k = 0; k < others.Length; k++)
+        {
+            double sum = 0, most = 0, next = 0;
+            bool enough = true;
+            for (int i = 0; i < Bins; i++)
+            {
+                if (all[k, i] < MinPerBin) { enough = false; break; }
+                double rate = (double)soft[k, i] / all[k, i];
+                sum += rate;
+                if (rate > most) { next = most; most = rate; }
+                else if (rate > next) next = rate;
+            }
+            pattern[k] = enough && sum > 0 ? (most + next) / sum : 0;
+        }
+        return (edges == 0 ? 0 : (double)smeared / edges, edges, pattern);
     }
 }
